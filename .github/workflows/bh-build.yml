@@ -1,7 +1,8 @@
 # bh: the Linux AppImage with its process plug-ins (bh/BH.md). A pull request into bh is tested and
-# built (the AppImage is an artifact to try); a push to bh builds and publishes the release the
-# app's Update now installs. Upstream's own workflows are turned off here: this repository has
-# none of their secrets and must not run their schedules.
+# built (the AppImage is an artifact to try). Merging it publishes that same tested AppImage as the
+# release the app's Update now installs; only a push that isn't a clean merge of a built pull
+# request builds again. Upstream's own workflows are turned off here: this repository has none of
+# their secrets and must not run their schedules.
 name: bh-build
 
 on:
@@ -42,37 +43,69 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      actions: read
+    outputs:
+      reused: ${{ steps.tested.outputs.found }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
       - name: Version
         id: v
         run: |
           upstream=$(awk '/^\[/ { in_pkg = ($0 == "[workspace.package]"); next } in_pkg && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' Cargo.toml)
           echo "version=$upstream-bh.$GITHUB_RUN_NUMBER" >>"$GITHUB_OUTPUT"
-          echo "### SolidCraft $upstream-bh.$GITHUB_RUN_NUMBER (upstream $(cat bh/UPSTREAM))" >>"$GITHUB_STEP_SUMMARY"
+      # A merged pull request whose tree is this commit's (it was up to date with bh) was already
+      # built and tested by its own run: release that AppImage rather than build a new one.
+      - name: Reuse the pull request's build
+        id: tested
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(git rev-parse --verify -q 'HEAD^2') || { echo "not a merge: building"; exit 0; }
+          if [ "$(git rev-parse 'HEAD^{tree}')" != "$(git rev-parse "$head^{tree}")" ]; then
+            echo "the merge changed the tree: building"; exit 0
+          fi
+          run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow bh-build.yml --commit "$head" --status success --json databaseId --jq '.[0].databaseId // empty')
+          [ -n "$run" ] || { echo "no successful build of $head: building"; exit 0; }
+          gh run download "$run" -R "$GITHUB_REPOSITORY" -D "$RUNNER_TEMP/tested"
+          mkdir -p dist/release
+          find "$RUNNER_TEMP/tested" -type f -exec cp {} dist/release/ \;
+          version=$(cd dist/release && ls solidcraft-*-linux-x86_64.AppImage | sed -nE 's/^solidcraft-([0-9].*)-linux-x86_64\.AppImage$/\1/p')
+          [ -n "$version" ] || { echo "::error::no versioned AppImage in run $run"; exit 1; }
+          { echo "found=true"; echo "version=$version"; } >>"$GITHUB_OUTPUT"
+          echo "Releasing the AppImage of pull request head \`$head\` (run $run): $version" >>"$GITHUB_STEP_SUMMARY"
       - name: Install packaging tools
+        if: steps.tested.outputs.found != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends desktop-file-utils appstream zsync
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.tested.outputs.found != 'true'
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: steps.tested.outputs.found != 'true'
         with:
           key: bh-linux-x86_64
           workspaces: |
             .
             bh/plugins/designs
+          # A pull request's cache is visible only to itself: only bh saves one.
+          save-if: ${{ github.event_name == 'push' }}
+      # Release profile: the tests share every dependency with the AppImage build and its cache.
       - name: Test
         if: github.event_name == 'pull_request'
         run: |
-          cargo test --locked -p solidcraft-ui-egui --lib bh_plugins
-          cargo test --locked -p solidcraft-ui-egui --lib update
-          cargo test --locked --manifest-path bh/plugins/designs/Cargo.toml
+          cargo test --release --locked -p solidcraft-ui-egui --lib -- bh_plugins update::
+          cargo test --release --locked --manifest-path bh/plugins/designs/Cargo.toml
       - name: Build the plug-ins
+        if: steps.tested.outputs.found != 'true'
         run: |
           cargo build --locked --release --manifest-path bh/plugins/designs/Cargo.toml
           mkdir -p "$RUNNER_TEMP/plugins/designs"
           cp bh/plugins/designs/plugin.json bh/plugins/designs/bh.json bh/plugins/designs/target/release/designs "$RUNNER_TEMP/plugins/designs/"
       - name: Build and package the AppImage
+        if: steps.tested.outputs.found != 'true'
         env:
           SOLIDCRAFT_VERSION: ${{ steps.v.outputs.version }}
           SOLIDCRAFT_BH_REPO: ${{ github.repository }}
@@ -88,12 +121,14 @@ jobs:
         run: |
           image=dist/release/solidcraft-linux-x86_64.AppImage
           chmod +x dist/release/*.AppImage
+          (cd dist/release && sha256sum -c SHA256SUMS.txt)
           APPIMAGE_EXTRACT_AND_RUN=1 "$image" --version
           "$image" --appimage-updateinformation | grep -F "gh-releases-zsync|${GITHUB_REPOSITORY%%/*}|${GITHUB_REPOSITORY#*/}|"
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$image" --appimage-extract usr/share/solidcraft/plugins >/dev/null)
           test -x "$RUNNER_TEMP/squashfs-root/usr/share/solidcraft/plugins/designs/designs"
           test -s "$RUNNER_TEMP/squashfs-root/usr/share/solidcraft/plugins/designs/bh.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.tested.outputs.found != 'true'
         with:
           name: solidcraft-${{ steps.v.outputs.version }}-linux-x86_64
           path: dist/release/*
@@ -102,8 +137,29 @@ jobs:
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.v.outputs.version }}
+          VERSION: ${{ steps.tested.outputs.version || steps.v.outputs.version }}
         run: |
           upstream=$(cat bh/UPSTREAM)
           gh release create "v$VERSION" dist/release/* --target "$GITHUB_SHA" --title "SolidCraft $VERSION" \
             --notes "Upstream [$upstream](https://github.com/tangency-labs/solidcraft/releases/tag/$upstream) with process plug-ins (bh/BH.md). Linux AppImage only."
+
+  # When the release reused a pull request's build, bh saved no cache: build here, after the
+  # release, so the next pull request starts warm.
+  cache:
+    name: Refresh the build cache
+    needs: linux
+    if: github.event_name == 'push' && needs.linux.outputs.reused == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: bh-linux-x86_64
+          workspaces: |
+            .
+            bh/plugins/designs
+      - run: |
+          cargo build --release --locked -p solidcraft -p solidcraft-cli
+          cargo test --release --locked -p solidcraft-ui-egui --lib --no-run
+          cargo build --release --locked --manifest-path bh/plugins/designs/Cargo.toml
