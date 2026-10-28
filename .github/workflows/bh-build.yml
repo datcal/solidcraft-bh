@@ -1,0 +1,109 @@
+# bh: the Linux AppImage with its process plug-ins (bh/BH.md). A pull request into bh is tested and
+# built (the AppImage is an artifact to try); a push to bh builds and publishes the release the
+# app's Update now installs. Upstream's own workflows are turned off here: this repository has
+# none of their secrets and must not run their schedules.
+name: bh-build
+
+on:
+  pull_request:
+    branches: [bh]
+  push:
+    branches: [bh]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bh-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upstream-workflows:
+    name: Turn off upstream workflows
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api "repos/$GH_REPO/actions/workflows" --paginate \
+            --jq '.workflows[] | select(.state == "active") | select(.path | startswith(".github/workflows/bh-") | not) | .id' |
+            while read -r id; do
+              gh api -X PUT "repos/$GH_REPO/actions/workflows/$id/disable" && echo "turned off workflow $id"
+            done
+
+  linux:
+    name: Linux x86_64
+    # The oldest GitHub-hosted image, as upstream: the binaries only need glibc >= 2.35.
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Version
+        id: v
+        run: |
+          upstream=$(awk '/^\[/ { in_pkg = ($0 == "[workspace.package]"); next } in_pkg && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' Cargo.toml)
+          echo "version=$upstream-bh.$GITHUB_RUN_NUMBER" >>"$GITHUB_OUTPUT"
+          echo "### SolidCraft $upstream-bh.$GITHUB_RUN_NUMBER (upstream $(cat bh/UPSTREAM))" >>"$GITHUB_STEP_SUMMARY"
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends desktop-file-utils appstream zsync
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: bh-linux-x86_64
+          workspaces: |
+            .
+            bh/plugins/designs
+      - name: Test
+        if: github.event_name == 'pull_request'
+        run: |
+          cargo test --locked -p solidcraft-ui-egui --lib bh_plugins
+          cargo test --locked -p solidcraft-ui-egui --lib update
+          cargo test --locked --manifest-path bh/plugins/designs/Cargo.toml
+      - name: Build the plug-ins
+        run: |
+          cargo build --locked --release --manifest-path bh/plugins/designs/Cargo.toml
+          mkdir -p "$RUNNER_TEMP/plugins/designs"
+          cp bh/plugins/designs/plugin.json bh/plugins/designs/bh.json bh/plugins/designs/target/release/designs "$RUNNER_TEMP/plugins/designs/"
+      - name: Build and package the AppImage
+        env:
+          SOLIDCRAFT_VERSION: ${{ steps.v.outputs.version }}
+          SOLIDCRAFT_BH_REPO: ${{ github.repository }}
+          BH_PLUGINS_DIR: ${{ runner.temp }}/plugins
+        run: |
+          packaging/linux/package.sh --formats appimage
+          cd dist/release
+          # The name the app's updater downloads (update.rs asset_name).
+          cp "solidcraft-$SOLIDCRAFT_VERSION-linux-x86_64.AppImage" solidcraft-linux-x86_64.AppImage
+          sha256sum -- * >SHA256SUMS.txt
+          ls -l
+      - name: Check the AppImage
+        run: |
+          image=dist/release/solidcraft-linux-x86_64.AppImage
+          chmod +x dist/release/*.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 "$image" --version
+          "$image" --appimage-updateinformation | grep -F "gh-releases-zsync|${GITHUB_REPOSITORY%%/*}|${GITHUB_REPOSITORY#*/}|"
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$image" --appimage-extract usr/share/solidcraft/plugins >/dev/null)
+          test -x "$RUNNER_TEMP/squashfs-root/usr/share/solidcraft/plugins/designs/designs"
+          test -s "$RUNNER_TEMP/squashfs-root/usr/share/solidcraft/plugins/designs/bh.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solidcraft-${{ steps.v.outputs.version }}-linux-x86_64
+          path: dist/release/*
+          if-no-files-found: error
+      - name: Publish the release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          upstream=$(cat bh/UPSTREAM)
+          gh release create "v$VERSION" dist/release/* --target "$GITHUB_SHA" --title "SolidCraft $VERSION" \
+            --notes "Upstream [$upstream](https://github.com/tangency-labs/solidcraft/releases/tag/$upstream) with process plug-ins (bh/BH.md). Linux AppImage only."

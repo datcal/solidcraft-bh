@@ -1,0 +1,20 @@
+# designs: a SolidCraft process plug-in (../PROTOCOL.md) for a design store (README.md).
+# Its own workspace: it is built on its own (bh/BH.md) and packaged into the app's plug-ins folder.
+[package]
+name = "designs"
+version = "1.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "3.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]
