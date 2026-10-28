@@ -356,6 +356,10 @@ mod desktop {
             }
             if let Some(open) = v.get("open").and_then(Value::as_bool) {
                 self.open = open;
+                if open {
+                    // The start page hides every window: the panel needs the workspace.
+                    app.home.open = false;
+                }
             }
             if let Some(status) = v.get("status") {
                 let text = status.get("text").and_then(Value::as_str).unwrap_or_default();
@@ -669,7 +673,7 @@ mod desktop {
 
     /// The plug-ins' buttons, right-aligned in `span` of the application bar (left of the Update
     /// pill). Returns where they start, for the document tabs to stop before (None: no buttons).
-    pub fn app_bar(_app: &mut SolveApp, ui: &mut egui::Ui, span: Rect) -> Option<f32> {
+    pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui, span: Rect) -> Option<f32> {
         HOST.with_borrow_mut(|host| {
             let t = Tokens::get();
             let mut right = span.right();
@@ -710,6 +714,10 @@ mod desktop {
                     } else {
                         let open = !plugin.open;
                         plugin.set_open(open);
+                        if open {
+                            // The start page hides every window: the panel needs the workspace.
+                            app.home.open = false;
+                        }
                     }
                 }
             }
@@ -720,6 +728,7 @@ mod desktop {
                 match spawn(found, ui.ctx()) {
                     Ok(mut running) => {
                         running.set_open(true);
+                        app.home.open = false;
                         host.plugins.insert(i, running);
                     }
                     Err((found, e)) => log::warn!("plug-in {}: {e}", found.id),
@@ -782,11 +791,12 @@ mod desktop {
             let script = dir.join("probe.sh");
             std::fs::write(
                 &script,
-                "#!/bin/sh\nread start\necho '{\"panel\":{\"title\":\"Probe\",\"body\":[]},\"request\":{\"id\":1,\"method\":\"engine.execute\",\"params\":{\"command\":\"solid.box\",\"params\":{\"length\":10,\"width\":10,\"height\":10}}}}'\nread response\ncase \"$response\" in *'\"id\":1'*'\"ok\":true'*) echo '{\"button\":{\"label\":\"ok\"}}' ;; *) echo '{\"button\":{\"label\":\"failed\"}}' ;; esac\nread rest\n",
+                "#!/bin/sh\nread start\necho '{\"panel\":{\"title\":\"Probe\",\"body\":[]},\"open\":true,\"request\":{\"id\":1,\"method\":\"engine.execute\",\"params\":{\"command\":\"solid.box\",\"params\":{\"length\":10,\"width\":10,\"height\":10}}}}'\nread response\ncase \"$response\" in *'\"id\":1'*'\"ok\":true'*) echo '{\"button\":{\"label\":\"ok\"}}' ;; *) echo '{\"button\":{\"label\":\"failed\"}}' ;; esac\nread rest\n",
             )
             .unwrap();
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
             let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+            app.home.open = true;
             let ctx = egui::Context::default();
             let found = discover(std::slice::from_ref(&base)).pop().unwrap();
             let mut running = spawn(found, &ctx).unwrap_or_else(|(_, e)| panic!("{e}"));
@@ -800,6 +810,7 @@ mod desktop {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             assert_eq!(running.panel["title"], "Probe");
+            assert!(running.open && !app.home.open, "opening the panel leaves the start page, which hides every window");
             assert_eq!(running.button.label, "ok", "the plug-in got an ok response to its request id 1");
             let bodies = app.session.execute("document.inspect", &json!({})).unwrap()["bodies"].as_array().map_or(0, Vec::len);
             assert_eq!(bodies, 1, "the box was made");
