@@ -62,9 +62,11 @@ Never add a domain name, address, token or anything about the owner's servers to
 
 ## CI: `.github/workflows/bh-build.yml`
 
-- **Pull request into `bh`:** runs the tests above, builds the AppImage with the plug-in, and uploads it as an artifact so it can be tried before merging.
-- **Push to `bh`** (a merged pull request): builds again and publishes the release.
+- **Pull request into `bh`:** runs the tests above (release profile, so they share the build cache), builds the AppImage with the plug-in, and uploads it as an artifact to try before merging.
+- **Push to `bh`** (a merged pull request) publishes the release.
+  - When the merge commit's tree is the pull request's (it was up to date with `bh`), the pull request's tested AppImage is released as it is, under its own version, within a minute. Anything else is built again.
   - Assets: `solidcraft-<version>-linux-x86_64.AppImage`, its `.zsync`, the `solidcraft-linux-x86_64.AppImage` name the app's updater downloads, and `SHA256SUMS.txt`.
+  - Only `bh` saves the Rust cache (a pull request's cache is visible to itself alone). After a release that reused a build, a `cache` job builds once more so the next pull request starts warm.
   - It also turns off any other workflow GitHub still knows about, in case one slipped back in.
 
 ## Installing

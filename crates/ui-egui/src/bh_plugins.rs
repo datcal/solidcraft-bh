@@ -110,6 +110,8 @@ mod desktop {
         pending: Vec<(Value, String, Receiver<Value>)>,
         exited: Option<String>,
         textures: HashMap<String, Option<egui::TextureHandle>>,
+        /// Where its application-bar button was drawn last: the panel hangs under it.
+        button_rect: Option<Rect>,
     }
 
     impl Drop for Running {
@@ -265,6 +267,7 @@ mod desktop {
             pending: Vec::new(),
             exited: None,
             textures: HashMap::new(),
+            button_rect: None,
         })
     }
 
@@ -391,11 +394,17 @@ mod desktop {
             let body = self.panel.get("body").cloned().unwrap_or(Value::Null);
             let mut events = Vec::new();
             let mut used = HashSet::new();
-            let at = pos2(ctx.content_rect().right() - 12.0, crate::toolbar::APP_BAR_HEIGHT + 8.0);
+            let cards = (width / t.form_card_width.max(1.0)).clamp(1.0, 16.0);
+            // Pinned under its button, right edges aligned and kept on the screen, every frame: a
+            // movable window would stay where it first opened when the app window is resized.
+            let screen = ctx.content_rect();
+            let shown = (t.form_card_width * cards).min(screen.width() - 16.0);
+            let right = self.button_rect.map_or(screen.right() - 12.0, |b| b.right()).max(screen.left() + 8.0 + shown).min(screen.right() - 8.0);
+            let top = self.button_rect.map_or(crate::toolbar::APP_BAR_HEIGHT, |b| b.bottom()) + 6.0;
             let closed = crate::ui_kit::Window::new(egui::Id::new(("bh_plugin_panel", &self.found.id)), &self.button.icon, &title)
-                .cards((width / t.form_card_width.max(1.0)).clamp(1.0, 16.0))
+                .cards(cards)
                 .page_rows(32.0)
-                .placed(Align2::RIGHT_TOP, at)
+                .anchor(Align2::RIGHT_TOP, vec2(right - screen.right(), top - screen.top()))
                 .show_body(ctx, |ui| {
                     if let Some(code) = &self.exited {
                         ui.label(RichText::new(format!("The plug-in stopped ({code}).")).color(t.error));
@@ -689,6 +698,7 @@ mod desktop {
                 }
                 let rect = Rect::from_min_size(pos2(right - width, span.center().y - 13.0), vec2(width, 26.0));
                 right = rect.left() - 6.0;
+                plugin.button_rect = Some(rect);
                 let response = ui.interact(rect, ui.id().with(("bh_plugin_button", &plugin.found.id)), Sense::click());
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
                 crate::scenario::publish_target(&format!("titlebar:plugin:{}", plugin.found.id), rect);
