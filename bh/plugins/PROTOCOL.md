@@ -59,6 +59,7 @@ Every line is one JSON object. A message from the program may carry several of t
 | | `{"type": "input", "id", "value"}` on every edit of a text field, `{"type": "submit", "id", "value"}` on Enter. |
 | | `{"type": "card", "list", "id", "action"}`: a click on a card is `action: "open"`, on one of its actions that action's id. |
 | `response` | The control-channel reply (`{"ok": true, "result"}` or `{"ok": false, "error"}`) with the request's `id`. |
+| | A `document.inspect` result also has `file`: the open design's file path (or null), which the desktop app does not report there itself. |
 
 ## Panel elements
 

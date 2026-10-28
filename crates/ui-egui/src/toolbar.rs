@@ -199,8 +199,9 @@ fn menu_commands(
     out
 }
 
-/// Room for the version between Report a bug and the caption buttons.
-const RIGHT_GROUP: f32 = 60.0;
+/// Room for the version between Report a bug and the caption buttons. bh: wide enough for
+/// `v0.25.1-bh.12` (upstream: 60).
+const RIGHT_GROUP: f32 = 92.0;
 const CLUSTER_BUTTONS: f32 = 108.0;
 
 /// The centre of Help, between Settings and Report a bug.

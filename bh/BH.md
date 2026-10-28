@@ -20,9 +20,10 @@ Keep it this small. Every change is marked with a `bh:` comment.
 |---|---|
 | `crates/ui-egui/src/bh_plugins.rs` | New: the plug-in host. |
 | `crates/ui-egui/src/lib.rs` | `pub mod bh_plugins;`; `bh_plugins::pump(self, ctx)` in `SolveApp::logic` just before `poll_control_jobs`; `bh_plugins::show(self, ui.ctx())` at the end of `SolveApp::ui`. |
-| `crates/ui-egui/src/toolbar.rs` | In `app_bar`, right after the Update pill: `bh_plugins::app_bar(...)`, and `tabs_end` stops before its buttons. |
+| `crates/ui-egui/src/toolbar.rs` | In `app_bar`, right after the Update pill: `bh_plugins::app_bar(...)`, and `tabs_end` stops before its buttons. `RIGHT_GROUP` is 92 (upstream 60) so the longer version fits. |
 | `crates/ui-egui/src/update.rs` | `SOLIDCRAFT_BH_REPO` (set by our CI at build time) points update checks at this repository; `is_newer` accepts `-bh.N`. |
 | `packaging/linux/package.sh` | Copies `BH_PLUGINS_DIR` to `usr/share/solidcraft/plugins`. |
+| `.github/workflows/*` | Upstream's workflows are deleted: this repository has none of their secrets, and they must not run on its schedules, pull requests or releases. Only `bh-*.yml` stays. |
 | `bh/`, `.github/workflows/bh-*.yml` | Ours. |
 
 `git diff "$(cat bh/UPSTREAM)" bh -- crates packaging` shows exactly this.
@@ -43,6 +44,7 @@ A scheduled agent runs this. A person can too.
    - `git switch -c sync/vX.Y.Z origin/bh`
    - `git merge --no-ff vX.Y.Z -m "Merge upstream vX.Y.Z"`
    - Resolve conflicts: keep upstream's code and re-apply our hooks as in the table above, minimal and marked `bh:`.
+   - Delete every workflow the merge brings back or adds: `git rm` anything in `.github/workflows/` not named `bh-*` (a change upstream made to one of them shows as a modify/delete conflict; resolve it by deleting).
    - If upstream now has its own way to run plug-ins or panels, keep ours working and describe the overlap in the pull request instead of redesigning.
 5. **Update the marker:** write `vX.Y.Z` to `bh/UPSTREAM` and commit.
 6. **Test:**
@@ -63,7 +65,7 @@ Never add a domain name, address, token or anything about the owner's servers to
 - **Pull request into `bh`:** runs the tests above, builds the AppImage with the plug-in, and uploads it as an artifact so it can be tried before merging.
 - **Push to `bh`** (a merged pull request): builds again and publishes the release.
   - Assets: `solidcraft-<version>-linux-x86_64.AppImage`, its `.zsync`, the `solidcraft-linux-x86_64.AppImage` name the app's updater downloads, and `SHA256SUMS.txt`.
-  - It also turns off every upstream workflow (anything not named `bh-*`), since this repository has none of their secrets and must not run their schedules.
+  - It also turns off any other workflow GitHub still knows about, in case one slipped back in.
 
 ## Installing
 

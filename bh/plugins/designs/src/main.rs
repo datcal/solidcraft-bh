@@ -452,7 +452,8 @@ impl Plugin {
     /// The active document (`document.inspect`): which store design it is, whether it has unsaved
     /// changes, and whether one of the opened files was saved since it was last uploaded.
     fn inspected(&mut self, doc: &Value) {
-        let path = doc.get("path").and_then(Value::as_str).map(PathBuf::from);
+        // `file` is added by the plug-in host (the desktop app's `path` stays empty).
+        let path = doc.get("file").or_else(|| doc.get("path")).and_then(Value::as_str).map(PathBuf::from);
         let open_name = path.as_deref().and_then(|p| self.name_of(p));
         let dirty = doc.get("dirty").and_then(Value::as_bool).unwrap_or(false);
         let mut changed = (open_name.clone(), dirty) != (self.open_name.clone(), self.dirty);

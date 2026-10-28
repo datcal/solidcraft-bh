@@ -106,7 +106,8 @@ mod desktop {
         open: bool,
         /// Text fields being edited, by id, with the `reset` number the plug-in last gave them.
         fields: HashMap<String, (String, i64)>,
-        pending: Vec<(Value, Receiver<Value>)>,
+        /// Requests waiting for the app: the plug-in's id, the method, the reply.
+        pending: Vec<(Value, String, Receiver<Value>)>,
         exited: Option<String>,
         textures: HashMap<String, Option<egui::TextureHandle>>,
     }
@@ -311,18 +312,25 @@ mod desktop {
                 }
             }
             let mut answered = Vec::new();
-            self.pending.retain(|(id, rx)| match rx.try_recv() {
+            self.pending.retain(|(id, method, rx)| match rx.try_recv() {
                 Ok(reply) => {
-                    answered.push((id.clone(), reply));
+                    answered.push((id.clone(), method.clone(), reply));
                     false
                 }
                 Err(TryRecvError::Empty) => true,
                 Err(TryRecvError::Disconnected) => {
-                    answered.push((id.clone(), json!({"ok": false, "error": "the request was dropped"})));
+                    answered.push((id.clone(), method.clone(), json!({"ok": false, "error": "the request was dropped"})));
                     false
                 }
             });
-            for (id, mut reply) in answered {
+            for (id, method, mut reply) in answered {
+                // The desktop app keeps the open design's file in the session, which
+                // `document.inspect` does not report: add it as `file`.
+                if method == "document.inspect"
+                    && let Some(result) = reply.get_mut("result").and_then(Value::as_object_mut)
+                {
+                    result.insert("file".into(), json!(app.session.path));
+                }
                 if let Some(o) = reply.as_object_mut() {
                     o.insert("id".into(), id);
                 }
@@ -368,7 +376,7 @@ mod desktop {
                 let params = r.get("params").cloned().unwrap_or_else(|| json!({}));
                 let (req, rx) = crate::control::ControlRequest::new(method, params);
                 app.control_held.push_back(req);
-                self.pending.push((id, rx));
+                self.pending.push((id, method.to_string(), rx));
             }
         }
 
