@@ -421,7 +421,9 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         let span = Rect::from_min_max(pos2(x, report.top()), pos2(controls_left - 2.0, report.bottom()));
         let update_labeled = report_label;
         let update = crate::update::button(app, ui, span, update_labeled);
-        let tabs_end = update.map_or(controls_left, |u| u.left()) - 8.0;
+        // bh: process plug-in buttons, left of the Update pill (bh/BH.md).
+        let plugins_left = crate::bh_plugins::app_bar(app, ui, span.with_max_x(update.map_or(span.right(), |u| u.left() - 6.0)));
+        let tabs_end = update.map_or(controls_left, |u| u.left()).min(plugins_left.unwrap_or(f32::INFINITY)) - 8.0;
         // Narrow title bars can fit only part of the tab strip. Its hit regions must not
         // extend into the persistent report and window controls.
         let tabs_rect = Rect::from_min_max(pos2(tabs_start.min(tabs_end), r.top()), pos2(tabs_end, r.bottom()));

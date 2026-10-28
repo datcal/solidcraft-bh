@@ -35,10 +35,22 @@ pub const RELEASES_PAGE: &str = "https://github.com/bherbruck/solidcraft/release
 /// on the old name, which GitHub redirects after a transfer).
 const RELEASE_PREFIXES: [&str; 2] = ["https://github.com/bherbruck/solidcraft/releases/", "https://github.com/tangency-labs/solidcraft/releases/"];
 
+/// bh: the repository a datcal/solidcraft-bh build updates from, set by its CI at build time
+/// (bh/BH.md). Unset, updates come from upstream as above.
+const BH_REPO: Option<&str> = option_env!("SOLIDCRAFT_BH_REPO");
+
+fn latest_api() -> String {
+    BH_REPO.map_or_else(|| LATEST_API.to_string(), |r| format!("https://api.github.com/repos/{r}/releases/latest"))
+}
+
+fn releases_page() -> String {
+    BH_REPO.map_or_else(|| RELEASES_PAGE.to_string(), |r| format!("https://github.com/{r}/releases/latest"))
+}
+
 /// A release page or asset URL: github.com, one of the two owners, exactly `solidcraft`, then
 /// `/releases/` (the trailing slash rules out look-alike names such as `solidcraft-evil`).
 fn is_release_url(url: &str) -> bool {
-    RELEASE_PREFIXES.iter().any(|p| url.starts_with(p))
+    RELEASE_PREFIXES.iter().any(|p| url.starts_with(p)) || BH_REPO.is_some_and(|r| url.starts_with(&format!("https://github.com/{r}/releases/")))
 }
 
 /// While the app stays open, automatic checks run once a day (every start checks too).
@@ -107,17 +119,19 @@ pub fn comparable(v: &semver::Version) -> semver::Version {
 /// a string that is not a version, the release history.
 pub fn release_notes_url(version: &str, release_build: bool) -> String {
     const HISTORY: &str = "https://github.com/tangency-labs/solidcraft/releases";
+    let history = BH_REPO.map_or_else(|| HISTORY.to_string(), |r| format!("https://github.com/{r}/releases"));
     if release_build && parse_version(version).is_some() && version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')) {
-        format!("{HISTORY}/tag/v{version}")
+        format!("{history}/tag/v{version}")
     } else {
-        HISTORY.to_string()
+        history
     }
 }
 
-/// `latest` (a release tag) is a stable release newer than the `current` build.
+/// `latest` (a release tag) is a stable release newer than the `current` build. bh: a
+/// `<upstream>-bh.<run>` release counts as stable.
 pub fn is_newer(latest: &str, current: &str) -> bool {
     let (Some(latest), Some(current)) = (parse_version(latest), parse_version(current)) else { return false };
-    latest.pre.is_empty() && latest > comparable(&current)
+    (latest.pre.is_empty() || latest.pre.as_str().starts_with("bh.")) && latest > comparable(&current)
 }
 
 /// This build's version: the release workflow's `SOLIDCRAFT_VERSION` (with any nightly suffix)
@@ -400,7 +414,7 @@ impl Release {
             notes.truncate(cut);
             notes.push_str("\n\n…");
         }
-        let page = Some(s("html_url")).filter(|u| is_release_url(u)).unwrap_or_else(|| RELEASES_PAGE.to_string());
+        let page = Some(s("html_url")).filter(|u| is_release_url(u)).unwrap_or_else(releases_page);
         let assets = v
             .get("assets")
             .and_then(Value::as_array)
@@ -620,7 +634,7 @@ fn start(app: &mut SolveApp, ctx: &egui::Context, manual: bool) {
     let fetch = move || -> Result<Release, FetchError> {
         let body = match (&feed, &http) {
             (Some(path), _) => std::fs::read(path).map_err(|e| FetchError::Failed(format!("{}: {e}", path.display())))?,
-            (None, Some(get)) => get(LATEST_API)?,
+            (None, Some(get)) => get(&latest_api())?,
             (None, None) => return Err(FetchError::Failed("no network client".into())),
         };
         Release::parse(&body)

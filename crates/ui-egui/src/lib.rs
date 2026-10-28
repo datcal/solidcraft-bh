@@ -192,6 +192,8 @@ pub mod params_dialog;
 pub(crate) mod pick_index;
 pub(crate) mod place_gizmo;
 pub(crate) mod plugins;
+// bh: process plug-ins (bh/BH.md)
+pub mod bh_plugins;
 pub mod prefs;
 pub mod prefs_notice;
 mod prefs_search;
@@ -2035,6 +2037,7 @@ impl SolveApp {
             self.set_up_axis(self.ui.up_axis);
         }
         self.step_view_animation(ctx);
+        bh_plugins::pump(self, ctx);
         self.poll_control_jobs(ctx);
         self.drain_control(ctx);
         self.follow_view_request(true);
@@ -2320,6 +2323,7 @@ impl SolveApp {
         shortcut_box::show(self, ui.ctx());
         prefs::show(self, ui.ctx());
         toolbar_custom::window(self, ui.ctx());
+        bh_plugins::show(self, ui.ctx());
     }
 
     fn show_workspace(&mut self, ui: &mut egui::Ui) {

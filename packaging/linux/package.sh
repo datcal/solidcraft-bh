@@ -68,6 +68,8 @@ install -Dm755 "$BIN/solidcraft-cli" "$STAGE/usr/bin/solidcraft-cli"
 # Compatibility shim (docs/compatibility.md): the old CLI name forwards to solidcraft-cli.
 install -Dm755 "$BIN/solvecraft-cli" "$STAGE/usr/bin/solvecraft-cli"
 strip "$STAGE/usr/bin/solidcraft" "$STAGE/usr/bin/solidcraft-cli" "$STAGE/usr/bin/solvecraft-cli" 2>/dev/null || true
+# bh: process plug-ins packaged with the app (bh/BH.md), found at <exe>/../share/solidcraft/plugins.
+if [ -n "${BH_PLUGINS_DIR:-}" ]; then mkdir -p "$STAGE/usr/share/solidcraft/plugins" && cp -R "$BH_PLUGINS_DIR"/. "$STAGE/usr/share/solidcraft/plugins/"; fi
 install -Dm644 "$ROOT/assets/platforms/linux/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
 install -Dm644 "$ROOT/assets/platforms/linux/$APP_ID.mime.xml" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
 mkdir -p "$STAGE/usr/share/metainfo"
