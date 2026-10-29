@@ -296,6 +296,7 @@ mod view_confirm;
 pub mod view_pick;
 pub mod viewport;
 mod viewport_layout;
+mod viewport_status_fixture;
 pub mod workspace;
 
 use std::sync::mpsc::Receiver;
@@ -449,6 +450,7 @@ pub struct PreSketchComponent {
 }
 
 pub struct SolveApp {
+    pub(crate) viewport_status_fixture: viewport_status_fixture::Fixture,
     /// Compact browser embed: retain model panels and joint controls without application chrome.
     pub embedded: bool,
     pub session: Session,
@@ -534,6 +536,7 @@ pub struct SolveApp {
     /// A feature started from a sketch while the marker rolls back, and that sketch: it starts
     /// once the marker is back.
     pub start_after_roll: Option<(String, u64)>,
+    pub(crate) timeline_playback: Option<timeline::Playback>,
     /// A delete's check of what it takes with it or breaks, computing off the window thread
     /// ([`deferred::DeleteCheck`], #2678).
     pub delete_check: Option<deferred::DeleteCheck>,
@@ -690,6 +693,7 @@ impl SolveApp {
         #[cfg(not(target_arch = "wasm32"))]
         solidcraft_engine::slicer_files::clean_old();
         let mut app = SolveApp {
+            viewport_status_fixture: Default::default(),
             session,
             ui: UiState::default(),
             shell: Default::default(),
@@ -737,6 +741,7 @@ impl SolveApp {
             deferred: None,
             deferred_queue: Vec::new(),
             start_after_roll: None,
+            timeline_playback: None,
             delete_check: None,
             apply_off_thread: None,
             #[cfg(test)]
@@ -1025,24 +1030,55 @@ impl SolveApp {
         if matches!(id, "file.save_mesh" | "file.send_to_slicer") {
             solidcraft_engine::slicers::set_chosen_programs(&self.preferences.custom_slicers);
         }
+        if id == "timeline.play" {
+            let reply = self.session.execute(id, &params).map_err(|e| e.to_string())?;
+            let action = serde_json::from_value(reply["action"].clone()).map_err(|e| e.to_string())?;
+            timeline::request_playback(self, action)?;
+            return Ok(reply);
+        }
         let t0 = now_ms();
+        let revision = self.session.revision;
+        if matches!(id, "render.lights.solo" | "render.lights.mute") {
+            render_workspace::light::validate_visibility(self, &params)?;
+        }
+        let params = if matches!(id, "render.start" | "render.preflight") { render_workspace::light::filter_request(self, params)? } else { params };
         let selected_before = self.session.selection.clone();
         let r = self.session.execute(id, &params).map_err(|e| e.to_string()).and_then(|reply| {
             render_workspace::apply_command(self, id, &reply)?;
             Ok(reply)
         });
         self.big_operation |= now_ms() - t0 >= recovery_ui::BIG_OPERATION_MS;
+        // An Undo offered by the last toast is stale once another command changed the design.
+        if self.status_undo && revision != self.session.revision {
+            self.status_undo = false;
+            self.status = None;
+        }
         let done = self.command_completed(id, r);
+        if self.session.revision != revision {
+            timeline::stop_playback(self);
+        }
         // Render focus already applies its semantic selection after clearing object picks.
+        // A tab switch brings in the other design's own Render selection.
         if done.is_ok()
-            && id != "view.render_select"
+            && !matches!(id, "view.render_select" | "view.next_tab" | "view.previous_tab")
             && (self.session.selection != selected_before || matches!(id, "select.set" | "select.clear" | "select.same_look"))
         {
+            if self.session.selection.is_empty() && render_workspace::active(self) {
+                render_workspace::selection_editor(self, &render_workspace::RenderSelection::Nothing);
+            }
             self.render_workspace.view.selection = if self.session.selection.is_empty() {
                 render_workspace::RenderSelection::Nothing
             } else {
                 render_workspace::RenderSelection::Object(self.session.selection.clone())
             };
+        }
+        if let Ok(v) = &done {
+            if matches!(id, "render.lights.solo" | "render.lights.mute") {
+                render_workspace::light::apply_visibility(self, id, v);
+            }
+            if matches!(id, "render.lights.set" | "render.lights.add" | "render.lights.duplicate" | "render.lights.remove") {
+                render_workspace::light::edited(self, &params, v);
+            }
         }
         done
     }
@@ -1081,6 +1117,7 @@ impl SolveApp {
                 "view.navigation_bar" => {
                     self.ui.show_navigation_bar = v.get("visible").and_then(Value::as_bool).unwrap_or(!self.ui.show_navigation_bar)
                 }
+                "view.next_tab" | "view.previous_tab" => documents::cycle(self, id == "view.next_tab"),
                 _ => {}
             }
             if id == "view.render_inspector" {
@@ -1089,15 +1126,33 @@ impl SolveApp {
             if id == "view.render_browser" {
                 render_workspace::apply_browser_controls(self, v);
             }
+            if id == "appearance.favorite" {
+                render_workspace::assign::favorite_applied(self, v);
+            }
+            if id == "view.render_frame" {
+                render_workspace::shot::apply_frame(self, v);
+            }
             if id == "view.render_select" {
                 use render_workspace::RenderSelection;
                 let selected = match v.get("kind").and_then(Value::as_str) {
                     Some("environment") => RenderSelection::Environment,
+                    Some("wear") => RenderSelection::Wear,
+                    Some("lighting") => {
+                        render_workspace::select_lighting(self);
+                        RenderSelection::Lighting
+                    }
                     Some("output") => RenderSelection::Output,
-                    Some("light") => RenderSelection::Light(v.get("id").and_then(Value::as_str).unwrap_or_default().into()),
+                    Some("sampling") => RenderSelection::Sampling,
+                    Some("effects") => RenderSelection::Effects,
+                    Some("check") => RenderSelection::Check,
+                    Some("light") => {
+                        render_workspace::select_lighting(self);
+                        RenderSelection::Light(v.get("id").and_then(Value::as_str).unwrap_or_default().into())
+                    }
                     Some("shot") => RenderSelection::Shot(v.get("id").and_then(Value::as_str).unwrap_or_default().into()),
                     _ => RenderSelection::Nothing,
                 };
+                render_workspace::selection_editor(self, &selected);
                 self.render_workspace.view.selection = selected;
             }
             if id == "view.layout" {
@@ -1165,7 +1220,8 @@ impl SolveApp {
                     self.preferences.timeline_left_width = ui_kit::history_snap_width(width as f32);
                 }
                 if let Some(dock) = v.get("dock").and_then(Value::as_str) {
-                    self.preferences.timeline_left = dock != "bottom";
+                    self.preferences.timeline_left = !matches!(dock, "bottom" | "browser");
+                    self.preferences.history_in_browser = dock == "browser";
                     self.preferences.timeline_under_browser = dock == "under_browser";
                     self.preferences.timeline_collapsed = false;
                     self.preferences.timeline_left_browser_collapsed = false;
@@ -1207,6 +1263,12 @@ impl SolveApp {
             sketch_palette::apply_mode(self, id, v);
         }
         self.finish_command(id, &r);
+        if render_workspace::active(self)
+            && matches!(id, "appearance.assign" | "appearance.paste")
+            && let Ok(value) = &r
+        {
+            render_workspace::assign::assigned(self, value);
+        }
         r
     }
 
@@ -1236,6 +1298,7 @@ impl SolveApp {
                     self.edit_in_place.active = None;
                     render_workspace::reset_document(self);
                     dim_view::cancel();
+                    timeline::stop_playback(self);
                     self.menu.props = None;
                     sketch_attachment_ui::clear(self);
                     // The old document is already replaced: discard its editor without
@@ -1255,6 +1318,9 @@ impl SolveApp {
                     self.home.add_recent(&p);
                     if matches!(id, "file.save" | "file.save_as") {
                         home::remember_session(&mut self.home, &self.session);
+                        // Say where it went, as an export does (#8693).
+                        let saved = self.tr("ui.design_saved").replace("{path}", &p);
+                        self.set_status(saved, false);
                     }
                 }
             }
@@ -1300,10 +1366,17 @@ impl SolveApp {
     }
 
     fn start_with_variant_memory(&mut self, id: &str, remember_variant: bool, opener: Option<egui::Rect>) {
+        if id == "timeline.play" {
+            if let Err(why) = self.run(id, json!({})) {
+                self.set_status(why, true);
+            }
+            return;
+        }
         if id == "ui.palette" {
             shortcut_box::open(self, None);
             return;
         }
+        timeline::stop_playback(self);
         // A file is loading: the design waits for it.
         if self.file_load.busy() || self.file_picker.is_some() {
             return;
@@ -1385,7 +1458,17 @@ impl SolveApp {
             return;
         }
         // A display toggle leaves the current modelling tool and camera in place.
-        if matches!(id, "view.fit" | "view.home" | "view.spin" | "view.grid" | "view.ground_shadow" | "view.navigation_bar") {
+        if matches!(
+            id,
+            "view.fit"
+                | "view.home"
+                | "view.spin"
+                | "view.grid"
+                | "view.ground_shadow"
+                | "view.navigation_bar"
+                | "view.next_tab"
+                | "view.previous_tab"
+        ) {
             let _ = self.run(id, json!({}));
             return;
         }
@@ -2379,10 +2462,12 @@ impl SolveApp {
         }
         self.ui.layout.publish(ui.ctx());
         self.preferences.dialog_buttons.publish(ui.ctx());
+        self.preferences.toast_place.publish(ui.ctx());
         scenario::clear_handles();
         self.poll_feature_edit(ui.ctx());
         self.poll_deferred(ui.ctx());
         self.poll_delete_check(ui.ctx());
+        timeline::tick_playback(self, ui.ctx());
         if !self.embedded {
             toolbar::app_bar(self, ui);
         }
@@ -2414,7 +2499,7 @@ impl SolveApp {
         let floating = render_workspace::active(self) || ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Panel).floating();
         timeline::follow_view_pick(self);
         render_ui::focus_shortcut(self, ui);
-        let show_timeline = self.ui.show_timeline && !render_workspace::active(self);
+        let show_timeline = self.ui.show_timeline && !render_workspace::active(self) && !self.preferences.history_in_browser;
         let left_timeline = show_timeline && self.preferences.timeline_left;
         timeline_left::animate_folds(self, ui.ctx());
         if !floating && !self.embedded {

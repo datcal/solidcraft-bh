@@ -564,7 +564,8 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
     if inside && caps.orbit && trackpad_orbit && raw.shift_pan != egui::Vec2::ZERO {
         app.cancel_view_animation();
         app.viewport.orbit_free = None;
-        orbit(app, rect, f64::from(raw.shift_pan.x), f64::from(raw.shift_pan.y), hover);
+        let sign = crate::prefs::orbit_sign(app);
+        orbit(app, rect, sign * f64::from(raw.shift_pan.x), sign * f64::from(raw.shift_pan.y), hover);
     }
     // A left press with the preset's keys (Alias: Shift+Alt) navigates until the button is let
     // go (kept through the release frame, so the end of the drag doesn't select either).

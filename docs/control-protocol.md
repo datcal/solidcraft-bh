@@ -1,5 +1,12 @@
 # Control protocol
 
+For UI-kit review, `ui.status_fixture {"preset":"mode"}` shows bounded status
+specimens in the real viewport. Presets are `off`, `mode`, `result`, `attention`,
+`row`, `kinds` and `key`; the reply carries the preset and item count. This
+scenario fixture does not change engine state or open a dialog. `off` clears it.
+The published `viewport_status:<id>:item`, `:setting`, `:key` and `:close` handles
+support the ordinary `ui.at`, `ui.move`, `ui.click` and keyboard controls.
+
 The control channel is **on by default**. SolidCraft listens on `127.0.0.1` only, for JSON lines,
 so agents can drive the app without a launch flag. Every connection still needs this launch's
 token (below); nothing else on the machine, and nothing off it, can send a command.
@@ -355,6 +362,7 @@ One setting per line, sorted by name. A change that adds a setting adds its own 
 - `nav_bridge_enabled` (default false) and `nav_bridge_port` (default 8765: a device's own app on this computer moves the view, [the navigation bridge](3d-mouse.md#device-apps-the-navigation-bridge))
 - `offer_stand_up`
 - `orbit_around` (`view_centre` (default: what Pan moves and Fit frames), `origin` (the world origin stays still on screen), `cursor` (the model point under the pointer when the drag began); the older `orbit_cursor` boolean still sets `cursor` when true)
+- `orbit_reverse` (default false: Shift with two-finger scrolling orbits the other way)
 - `origin_plane_names` (`xyz` (default) or `top_front_right`: the browser, dialogs and lists call the origin planes Top, Front and Right; their ids, commands and saved designs keep XY, XZ and YZ)
 - `pan_reverse_x` (default false: horizontal scrolling pans the other way)
 - `pan_reverse_y` (default false: vertical scrolling pans the other way)
@@ -362,6 +370,7 @@ One setting per line, sorted by name. A change that adds a setting adds its own 
 - `show_frame_rate` (default false: frames per second in the view's bottom-right corner, counting the frames the view draws anyway; it reads 0 FPS once the view is idle)
 - `sketch_auto_dimensions` (default false: each shape drawn in a sketch gets all its dimensions at the sizes drawn, as `sketch.draw.dimensioned` with `as_drawn`; typed values win)
 - `sketch_auto_locate` (default false; with `sketch_auto_dimensions`, new shapes are also placed from the sketch origin until fully constrained, as `sketch.draw.dimensioned` with `locate`)
+- `sketch_conflict_colour` (default true: while the open sketch's constraints conflict, the curves and points a failing constraint holds are drawn in the theme's `sketch_conflict` colour too, not only its glyph or dimension; false: only the glyphs and dimensions are red, in `error`, as before, #7244)
 - `sketch_exit_view` (`keep` (default: the view stays where it is when a sketch ends), `previous` (back to the view from before the sketch), `unless_rotated` (back unless the sketch view was turned))
 - `sketch_state_icons` (default true: a sketch's icon in History and the browser takes the colour of its solve state, `sketch` under constrained, `sketch_fixed` fully constrained, `error` while its constraints conflict, and its tooltip names the state; false: every sketch row's icon and tooltip as before, #7245)
 - `sketch_tab_always` (default false: the SKETCH tab stays in the ribbon right after MODEL while no sketch is open; a tool in its CREATE or REFERENCE section then opens Create Sketch, on the selected plane or planar face or else on the plane picked next, and starts in the new sketch, #7904)
@@ -375,6 +384,7 @@ One setting per line, sorted by name. A change that adds a setting adds its own 
 - `theme_import` (a `solidcraft-theme/1` file's JSON or text: adds the theme and turns it on; the reply's `theme_imported` is its id)
 - `theme_remove` (an imported theme's id)
 - `timeline_origin_bodies` (default false: the History on the left or under the browser starts with the active component's Bodies folder and the Origin, the browser's rows with their eyes, folds and menus; the bottom History is unchanged)
+- `toast_place` (`corner` (default: notices and offers stack in one column in the view's bottom-right corner, each 340 points wide, buttons right-aligned with the main action right-most, #7893), `centre` (at the bottom centre above the view toolbar, each as wide as its text, as before))
 - `trackpad_pan` (default true: two-finger scroll pans, except Touchpad always zooms; pinch zooms)
 - `ui_font` (an installed font family or a font file for the interface; empty for the built-in font)
 - `ui_scale`

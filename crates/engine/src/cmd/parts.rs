@@ -31,7 +31,7 @@ pub static COMMANDS: &[CommandSpec] = &[
 ];
 
 /// A family: (id, name, standard).
-const FAMILIES: [(&str, &str, &str); 7] = [
+const FAMILIES: &[(&str, &str, &str)] = &[
     ("socket_head_cap_screw", "Socket head cap screw", "ISO 4762"),
     ("hex_bolt", "Hex head bolt / screw", "ISO 4014 / ISO 4017"),
     ("hex_nut", "Hex nut", "ISO 4032"),

@@ -656,7 +656,7 @@ pub fn show(app: &mut SolveApp, ui: &egui::Ui, painter: &egui::Painter, proj: &P
         let expr = c.param.as_ref().and_then(|p| display_doc.param(p)).map(|p| p.expr.as_str());
         let failing = source.report.failing.contains(&c.id);
         let col = if failing {
-            tk.error
+            crate::viewport::Conflict::glyph_colour(app, &tk)
         } else if is_sel(&c.id) || hover.as_deref() == Some(c.id.as_str()) {
             tk.accent
         } else if c.driven {

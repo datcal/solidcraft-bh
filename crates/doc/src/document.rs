@@ -3351,12 +3351,13 @@ impl Document {
         Ok(id)
     }
 
-    /// A component by id or name (0 / "root" is the design itself).
+    /// A component by id or name (0 / "root" is the design itself). A component that carries the
+    /// design's own name is found by that name: the design is still named by 0 / "root".
     pub fn find_component(&self, key: &str) -> Option<u64> {
-        if key == "0" || key.eq_ignore_ascii_case("root") || key == self.name {
+        if key == "0" || key.eq_ignore_ascii_case("root") {
             return Some(0);
         }
-        self.components.iter().find(|c| c.id.to_string() == key || c.name == key).map(|c| c.id)
+        self.components.iter().find(|c| c.id.to_string() == key || c.name == key).map(|c| c.id).or_else(|| (key == self.name).then_some(0))
     }
 
     /// Read a design file's JSON (any format this build knows; older ones are upgraded).

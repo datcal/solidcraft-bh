@@ -210,13 +210,14 @@ pub fn analysis_colors(c: &crate::theme::AnalysisColors) -> [f32; 36] {
 pub(crate) fn offscreen_backends() -> wgpu::Backends {
     static CHOSEN: std::sync::OnceLock<wgpu::Backends> = std::sync::OnceLock::new();
     *CHOSEN.get_or_init(|| {
-        let default = wgpu::InstanceDescriptor::new_without_display_handle_from_env().backends;
+        let default = solidcraft_gpu::instance_descriptor_from_env().backends;
         if !cfg!(target_os = "windows") || std::env::var("WGPU_BACKEND").is_ok_and(|v| !v.trim().is_empty()) {
             return default;
         }
         let hardware = |backends: wgpu::Backends| {
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backends = backends;
+            desc.backend_options.dx12.shader_compiler = solidcraft_gpu::dx12_compiler();
             let adapters = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(backends));
             adapters.iter().any(|a| a.get_info().device_type != wgpu::DeviceType::Cpu)
         };
@@ -232,7 +233,7 @@ pub(crate) fn offscreen_backends() -> wgpu::Backends {
 pub(crate) fn offscreen_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
     static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one_at_a_time = STARTING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    let mut desc = solidcraft_gpu::instance_descriptor_from_env();
     desc.backends = offscreen_backends();
     let instance = wgpu::Instance::new(desc);
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
@@ -409,6 +410,7 @@ fn offscreen(
     resources.insert(Renderer::new(&device, target, compute));
     let none = || Arc::new(Mutex::new(None));
     let cb = ViewportCallback(Frame {
+        product_lights: None,
         product,
         key: 1,
         slot: Arc::new(Mutex::new(Some(scene))),

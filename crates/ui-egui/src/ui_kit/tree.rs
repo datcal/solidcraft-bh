@@ -42,6 +42,8 @@ pub(crate) struct Row<'a> {
     pub(crate) badges: &'a [&'a str],
     /// A button right after the name: (icon, tooltip label), e.g. a feature's profile sketch.
     pub(crate) action: Option<(&'a str, &'a str)>,
+    /// A message id the row's tooltip names it by (a body row: mesh, surface or solid body).
+    pub(crate) kind_tip: Option<&'a str>,
     /// Lit by the selection or the 3D view's pointer: the item's own row, or a row leading to it.
     pub(crate) mark: Mark,
     /// Optional document appearance and shared trailing text slots.
@@ -74,6 +76,7 @@ pub(crate) struct RowResp {
     pub(crate) secondary: Option<Pos2>,
     pub(crate) fold: bool,
     pub(crate) eye: bool,
+    pub(crate) eye_rect: Option<Rect>,
     pub(crate) radio: bool,
     /// The row's [`Row::action`] button was clicked.
     pub(crate) action: bool,
@@ -198,6 +201,7 @@ pub(crate) fn tree_row(ui: &mut egui::Ui, id: egui::Id, row: &Row) -> RowResp {
         // Hidden or faded rows keep main's dimming, with the rounded suppression asset.
         icons::paint_icon(ui.painter(), er, if vis { "eye" } else { "suppress" }, if vis && !row.dim { 0.85 } else { DIM_ICON_OPACITY });
         out.eye = resp.clicked() && click_on == 2;
+        out.eye_rect = Some(eye_r.intersect(ui.clip_rect()));
         crate::scenario::publish_handle(&format!("eye:{}", row.label), er.center());
     }
     if !row.compact {
@@ -306,7 +310,8 @@ pub(crate) fn tree_row(ui: &mut egui::Ui, id: egui::Id, row: &Row) -> RowResp {
         3 => Some(if row.radio == Some(true) { crate::i18n::tr("ui.active_component") } else { crate::i18n::tr("ui.activate") }),
         _ => None,
     };
-    let resp = match (tip, row.tip) {
+    let state = row.kind_tip.map(crate::i18n::tr).or(row.tip);
+    let resp = match (tip, state) {
         (Some(t), _) => resp.on_hover_text(t),
         (None, Some(state)) if elided => resp.on_hover_text(format!("{label_display}\n{state}")),
         (None, Some(state)) => resp.on_hover_text(state),

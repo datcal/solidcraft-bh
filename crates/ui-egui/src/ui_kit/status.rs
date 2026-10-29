@@ -91,11 +91,46 @@ pub(crate) fn completion_text(ui: &mut egui::Ui, label: &str, complete: bool) ->
 
 /// Read-only check row with shared success/warning artwork and token-sized icon.
 pub(crate) fn check_line(ui: &mut egui::Ui, key: &str, label: &str, warning: bool) -> egui::Response {
+    check_status_line(ui, key, label, if warning { CheckStatus::Warning } else { CheckStatus::Ok })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CheckStatus {
+    Ok,
+    Warning,
+    Error,
+}
+
+impl CheckStatus {
+    /// Plain-text marker for copied check reports.
+    pub(crate) fn text_marker(self) -> &'static str {
+        match self {
+            Self::Ok => "✓",
+            Self::Warning => "!",
+            Self::Error => "×",
+        }
+    }
+}
+
+/// Semantic status glyphs use the same geometry and theme colours in every report.
+pub(crate) fn check_status_line(ui: &mut egui::Ui, key: &str, label: &str, status: CheckStatus) -> egui::Response {
     let t = Tokens::get();
     let response = ui
         .horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(t.form_icon_size, t.form_icon_size), egui::Sense::hover());
-            crate::icons::paint_icon(ui.painter(), rect, if warning { "status_warning" } else { "finish" }, 1.0);
+            match status {
+                CheckStatus::Ok => super::checks::paint_check_glyph(ui.painter(), rect, false, t.form_success),
+                CheckStatus::Warning | CheckStatus::Error => {
+                    let ink = if status == CheckStatus::Warning { t.warning } else { t.form_error };
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        if status == CheckStatus::Warning { "!" } else { "×" },
+                        egui::FontId::proportional(t.font_subtitle),
+                        ink,
+                    );
+                }
+            }
             super::text(ui, label, super::Text::Report(key, false));
         })
         .response;

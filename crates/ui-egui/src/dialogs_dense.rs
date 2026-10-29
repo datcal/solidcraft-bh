@@ -183,7 +183,7 @@ pub(super) fn rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: 
     if let Some(key) = manage_hint {
         ui_kit::text(ui, tr(key), ui_kit::Text::Hint("manage"));
     }
-    placement_row(d, ui, &app.session);
+    placement_row(d, ui, app);
     if crate::hole_refs::takes(d) {
         // Each reference edge with its distance (#37, #6380).
         enter |= crate::hole_refs::input_rows(d, ui, &app.session, app.preferences.origin_plane_names);
@@ -742,11 +742,10 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
             ui_kit::options(ui, "feature_options", &mut [("Flip", flip)]);
         }
         Kind::BoundaryFill { operation, cells, .. } => {
-            form_row(ui, "Cells", |ui| {
-                if cells.is_empty() {
-                    ui.label(RichText::new(tr("Pick the tool bodies")).color(Tokens::get().text_dim));
-                }
-            });
+            form_row(ui, "Cells", |_| {});
+            if cells.is_empty() {
+                ui_kit::status_line(ui, "Pick the tool bodies", ui_kit::StatusTone::Dim);
+            }
             for (i, (_, label, on)) in cells.iter_mut().enumerate() {
                 form_row(ui, &format!("Cell {}", i + 1), |ui| {
                     ui_kit::checkbox(ui, label.as_str(), on);

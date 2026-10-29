@@ -207,6 +207,10 @@ fn searchable_dropdown_with(
                     .hint_text(crate::i18n::tr_label("Search"))
                     .desired_width(f32::INFINITY),
             );
+            // Preferences types into its own search only while no field has the keyboard.
+            if search.has_focus() {
+                crate::prefs_search::note_key_sink(ui.ctx());
+            }
             scenario::publish_handle(&format!("dialog:{row} search"), search.rect.center());
             if let Some(custom) = custom {
                 let response = ui.selectable_label(false, custom);
@@ -569,6 +573,45 @@ pub(crate) fn searchable_icon_dropdown(
     searchable_dropdown_with(ui, "icon_search_menu", label, filter, options, SearchMenu { custom: None, pending: None, icon: Some(icon) })
 }
 
+/// The filter at the top of a long menu: a search glyph, a frameless editor and a rule under
+/// them, so it reads as the menu's search box and not as one more entry. Tokens: `space_8/16,
+/// font_label, form_dim, form_ink, dialog_rule`.
+pub(crate) fn menu_filter(ui: &mut Ui, id: egui::Id, value: &mut String, hint: &str) -> Response {
+    let t = Tokens::get();
+    let (rect, _) = ui.allocate_exact_size(vec2(dimension(ui.available_width()), row_height()), egui::Sense::hover());
+    let glyph = egui::Rect::from_center_size(egui::pos2(rect.left() + t.space_8 + t.space_16 / 2.0, rect.center().y), vec2(t.space_16, t.space_16));
+    crate::icons::paint_ink(ui.painter(), glyph, "zoom", t.form_dim);
+    let field = egui::Rect::from_min_max(egui::pos2((glyph.right() + t.space_8).min(rect.right()), rect.top()), rect.max);
+    let hint_text = crate::i18n::tr_label(hint);
+    let response = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(field));
+            ui.add_sized(
+                field.size(),
+                text_input(egui::TextEdit::singleline(value))
+                    .id(id)
+                    .char_limit(256)
+                    .hint_text(hint_text)
+                    .font(egui::FontId::proportional(t.font_label))
+                    .text_color(t.form_ink)
+                    .frame(egui::Frame::NONE)
+                    .clip_text(true),
+            )
+        })
+        .inner;
+    response.widget_info(|| {
+        let mut info = egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, ui.is_enabled(), hint_text);
+        info.current_text_value = Some(value.clone());
+        info
+    });
+    super::layout::publish_geometry(ui, &response);
+    if ui.rect_contains_pointer(rect) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+    }
+    super::Menu::separator(ui);
+    response
+}
+
 /// Behaviour of the one kit slider. Appearance is always owned by `slider`.
 /// Values/ranges stay in caller units; formatting never rounds saved values during drawing.
 pub(crate) struct Slider {
@@ -577,6 +620,16 @@ pub(crate) struct Slider {
     pub show_value: bool,
     pub integer: bool,
     pub workspace_accent: bool,
+}
+
+/// Bounded read-only code box for diagnostic payloads. Native selection and copying
+/// remain available; the caller's source cannot be edited. Uses shared form styling.
+pub(crate) fn read_only_text(ui: &mut Ui, text: &str) -> Response {
+    let mut source = text;
+    egui::ScrollArea::vertical()
+        .max_height(160.0)
+        .show(ui, |ui| ui.add(egui::TextEdit::multiline(&mut source).code_editor().desired_width(ui.available_width()).desired_rows(8)))
+        .inner
 }
 
 impl Default for Slider {
@@ -799,6 +852,9 @@ pub(crate) fn number_field<T: egui::emath::Numeric>(
     suffix: &str,
 ) -> Response {
     let response = ui.add(egui::DragValue::new(value).range(range).speed(speed).suffix(suffix).custom_parser(crate::prefs::parse_number));
+    if response.has_focus() {
+        crate::prefs_search::note_key_sink(ui.ctx());
+    }
     Tokens::get().input_bevel(ui, &response);
     response.widget_info(|| {
         let mut info = egui::WidgetInfo::drag_value(ui.is_enabled(), value.to_f64());
@@ -827,6 +883,34 @@ pub(crate) fn vector3_field(ui: &mut Ui, values: &mut [f64; 3], range: std::ops:
         }
     });
     changed
+}
+
+/// Equal-width numeric cells within a shared `row`. Returns each field's response in order.
+/// Tokens: `control_height`, inherited item spacing and number-field tokens.
+pub(crate) fn number_fields<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    values: &mut [T],
+    range: std::ops::RangeInclusive<T>,
+    speed: f64,
+    suffix: &str,
+) -> Vec<Response> {
+    let gap = ui.spacing().item_spacing.x;
+    let width = dimension(ui.available_width() - gap * values.len().saturating_sub(1) as f32) / values.len().max(1) as f32;
+    values
+        .iter_mut()
+        .enumerate()
+        .map(|(index, value)| {
+            ui.push_id(index, |ui| {
+                ui.allocate_ui_with_layout(vec2(width, row_height()), egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                    ui.spacing_mut().text_edit_width = width;
+                    ui.spacing_mut().interact_size.x = width;
+                    number_field(ui, value, range.clone(), speed, suffix)
+                })
+                .inner
+            })
+            .inner
+        })
+        .collect()
 }
 
 /// Growing plain-text message editor; its parent owns scrolling and Enter routing.

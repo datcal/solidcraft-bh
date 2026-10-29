@@ -72,10 +72,10 @@ fn linked_component_opens_its_part_in_a_tab_and_reports_a_missing_source() {
     assert!(!context_menu::items(&h.app, &Target::Component { id: 0 }).iter().any(|item| item.label == "Open Linked Design"));
 
     act(&mut h.app, &linked, "Open Linked Design");
-    for _ in 0..600 {
-        if h.app.session.path.as_deref() == part.to_str() {
-            break;
-        }
+    // The part opens in the background. A count of frames is no bound for that: frames are quick
+    // while a loaded machine is slow to read the file. Wait as `Harness::settle` waits for a load.
+    let began = std::time::Instant::now();
+    while h.app.session.path.as_deref() != part.to_str() && began.elapsed() < std::time::Duration::from_secs(120) {
         h.frame();
     }
     assert_eq!(h.app.session.path.as_deref(), part.to_str());
@@ -223,7 +223,7 @@ fn right_click_on_a_face_of_a_selected_body_keeps_the_bodies() {
     assert_eq!(app.session.selection, both, "the right-click keeps the bodies it is about");
     assert!(!context_menu::items(&app, &Target::Viewport).iter().any(|i| i.label == "Create Sketch"), "the bodies' menu, not the face menu");
     // An edge and a vertex of a selected body count the same way.
-    app.viewport.hover = Some(Hit::Edge { body: first.clone(), index: 0, mid: Vec3::new(9.0, 9.0, 9.0) });
+    app.viewport.hover = Some(Hit::Edge { body: first.clone(), index: 0, mid: Vec3::new(9.0, 9.0, 9.0), point: Vec3::new(9.0, 9.0, 9.0) });
     context_menu::open(&mut app, pos2(400.0, 300.0), Default::default());
     assert_eq!(app.session.selection, both, "an edge of a selected body keeps the bodies");
     // A face of a body outside the selection is still picked, so the menu is about that face.
@@ -952,6 +952,9 @@ fn v_with_a_menu_open_shows_or_hides_what_the_menu_is_for() {
     open(&mut h, Target::OriginPlane { name: "XY".into() });
     press_v(&mut h);
     assert!(h.app.session.visibility.hidden_origin.iter().any(|o| o == "XY"), "V on an origin plane's menu");
+    open(&mut h, Target::OriginAxis { name: "Z".into() });
+    press_v(&mut h);
+    assert!(h.app.session.visibility.hidden_origin.iter().any(|o| o == "Z"), "V on an origin axis's menu (#8382)");
     assert!(!h.app.session.visibility.hidden_bodies.contains(&b));
     // With no menu open, V still flips the selection.
     press_v(&mut h);
@@ -1235,6 +1238,27 @@ fn right_click_on_a_plane_offers_a_sketch_on_it() {
     assert_eq!(sketch, Some(25.0), "the sketch is on the construction plane");
 }
 
+/// A right-click on an origin axis row opens its own menu, with the planes' Show/Hide (#8382).
+#[test]
+fn right_click_on_an_origin_axis_offers_show_hide() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    crate::browser::toggle(&mut h.app, "origin", false);
+    h.frames(3);
+    let at = crate::scenario::handle_at("row:Y").expect("the Origin folder lists the Y axis");
+    h.call("ui.click", json!({"x": at.x, "y": at.y, "button": "right"}));
+    h.frames(2);
+    let menu = h.call("ui.menu", json!({}))["result"].clone();
+    assert_eq!(menu["target"], json!({"type": "origin_axis", "name": "Y"}), "{menu}");
+    let t = Target::OriginAxis { name: "Y".into() };
+    let labels: Vec<String> = context_menu::items(&h.app, &t).iter().map(|i| i.label.clone()).collect();
+    assert_eq!(labels, ["Show/Hide"], "an axis offers no Create Sketch");
+    act(&mut h.app, &t, "Show/Hide");
+    assert!(h.app.session.visibility.hidden_origin.contains(&"Y".to_string()), "hidden through the menu");
+    act(&mut h.app, &t, "Show/Hide");
+    assert!(!h.app.session.visibility.hidden_origin.contains(&"Y".to_string()), "shown again");
+}
+
 /// A right-click on empty space leads with Create Sketch too (#3032), in the same place as on a
 /// plane: the toolbar's, which asks for the plane or face. Either way the menu offers it once.
 #[test]
@@ -1436,6 +1460,7 @@ fn every_context_target_has_identified_icon_rows_including_submenus() {
         Target::Plane { id: plane },
         Target::Feature { id: feature },
         Target::OriginPlane { name: "XY".into() },
+        Target::OriginAxis { name: "Z".into() },
         Target::Component { id: part },
         Target::Occurrence { path: vec![occurrence] },
         Target::Group { id: group_id, scope: "c0".into() },
@@ -1443,6 +1468,7 @@ fn every_context_target_has_identified_icon_rows_including_submenus() {
         Target::Units,
         Target::ToolbarCommand { id: "solid.extrude".into() },
         Target::Toolbar,
+        Target::HistoryControls,
         Target::Workspace,
         Target::NamedViews,
         Target::NamedView { name: "Top".into() },
