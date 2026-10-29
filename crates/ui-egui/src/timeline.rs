@@ -382,6 +382,23 @@ pub(crate) fn message_button(app: &SolveApp, ui: &mut egui::Ui, id: u64) {
     }
 }
 
+/// Reuse the Browser action so both History layouts edit the same sketch attachment.
+pub(crate) fn sketch_plane_button(app: &mut SolveApp, ui: &mut egui::Ui, id: u64) {
+    if !matches!(app.session.doc.feature(id).map(|feature| &feature.kind), Some(FeatureKind::Sketch { .. })) {
+        return;
+    }
+    let Some(item) =
+        crate::context_menu::items(app, &crate::context_menu::Target::Sketch { id }).into_iter().find(|item| item.id == "ui.redefineSketch")
+    else {
+        return;
+    };
+    let response = crate::context_menu::button_enabled(ui, &item.label, &item.icon, item.enabled);
+    if response.clicked() {
+        crate::context_menu::run_item(app, &item, response.rect.center());
+        ui.close();
+    }
+}
+
 /// Shift+click on a feature: select the features from the anchor (the last feature clicked, or
 /// the last selected one) to this one. `order` is the timeline as drawn this frame, taken before
 /// drawing so the range never mixes two orders. Ctrl as well adds the range to the selection.
@@ -482,12 +499,11 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
     let grip = crate::ui_kit::panel_grip(&mut grip_ui).rect;
     x += t.space_10 + t.space_8;
     let mut drag_rect = grip;
-    let label = p.layout_no_wrap(crate::i18n::tr("ui.history_title").to_string(), crate::fonts::semibold(t.font_heading), t.text);
-    if x + label.size().x + t.space_12 + crate::ui_kit::history_transport_width() <= r.right() {
-        let title_rect = Rect::from_min_size(pos2(x, r.center().y - label.size().y / 2.0), label.size());
-        p.galley(title_rect.min, label.clone(), t.text);
+    let heading = crate::ui_kit::StripHeading::new(&p, crate::i18n::tr("ui.history_title"));
+    if x + heading.width() + crate::ui_kit::history_transport_width() <= r.right() {
+        let title_rect = heading.paint(&p, Rect::from_min_max(pos2(x, r.top()), r.right_bottom()));
         drag_rect = drag_rect.union(title_rect);
-        x += label.size().x + t.space_12;
+        x += heading.width();
     }
     let response = ui.interact(drag_rect, egui::Id::new("sc_history_dock_grip"), Sense::drag());
     crate::scenario::publish_handle("history:grip", drag_rect.center());
@@ -557,7 +573,10 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
             let mut hovered: Option<u64> = None;
             let mut edit: Option<u64> = None;
             let mut marker_rect: Option<Rect> = None;
+            // Each sketch's solve state, read once for the strip (#7245).
+            let sketch_states = crate::sketch_state::SketchStates::of(app);
             for (i, (id, name, icon, suppressed, ty, kind)) in feats.iter().enumerate() {
+                let sketch_state = matches!(kind, TimelineKind::Sketch).then(|| sketch_states.get(*id)).flatten();
                 if i == marker {
                     marker_rect = Some(Rect::from_min_size(pos2(x, r.top() + 5.0), vec2(t.space_12, r.height() - 10.0)));
                     x += t.space_16;
@@ -589,6 +608,7 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
                     error: err.is_some(),
                     warning: warn.is_some(),
                     reference: false,
+                    ink: sketch_state.and_then(|state| state.ink(&t)),
                     // A dragged feature takes the colour of its drop bar.
                     accent: if drag == Some(Drag::Feature(*id)) { crate::theme::TabAccent::for_tab(&t, "SKETCH") } else { accent },
                 }
@@ -597,6 +617,10 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
                     p.circle_filled(pos2(br.center().x, br.bottom() + t.space_3), t.space_2, accent.color);
                 }
                 let mut tip = status_text(name, ty, err.as_deref(), warn.as_deref());
+                if let Some(state) = sketch_state {
+                    tip.push('\n');
+                    tip.push_str(&state.text());
+                }
                 if let Some(r) = res {
                     tip += &format!("\n{:.1} ms", r.ms);
                 }
@@ -625,6 +649,7 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
                         edit = Some(*id);
                         ui.close();
                     }
+                    sketch_plane_button(app, ui, *id);
                     if let Some(sk) = sketch_of
                         && crate::context_menu::button(ui, crate::i18n::tr_label("Edit Profile Sketch"), "sketch").clicked()
                     {
@@ -635,7 +660,10 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
                         app.dialog = Some(crate::dialogs::Dialog::rename(*id, name));
                         ui.close();
                     }
-                    if crate::context_menu::button(ui, if *suppressed { "Unsuppress Features" } else { "Suppress Features" }, "suppress").clicked() {
+                    // Its own message, not a literal: no catalog held the literal, so the item
+                    // stayed English in every language (#8301).
+                    let suppress = if *suppressed { "timeline.unsuppress_features" } else { "timeline.suppress_features" };
+                    if crate::context_menu::button(ui, crate::i18n::tr(suppress), "suppress").clicked() {
                         let _ = app.run_heavy("timeline.suppress", json!({"feature": id}));
                         ui.close();
                     }
@@ -765,6 +793,7 @@ fn find_in_browser(app: &mut SolveApp, id: u64) {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use solidcraft_engine::doc::{FeatureKind, PlaneRef};
 
     use crate::scenario::Harness;
 
@@ -805,6 +834,41 @@ mod tests {
             let texts: Vec<_> = crate::test_support::text_shapes(&output).map(|t| t.galley.text()).collect();
             assert!(texts.contains(&expected), "left={left}: {texts:?}");
         }
+    }
+
+    /// #8301: the feature menu's suppress item is drawn from the catalog, so it follows the
+    /// reader's language. The literals it used were in no catalog and stayed English in every
+    /// language, the Japanese UI included.
+    #[test]
+    fn the_feature_menu_suppress_item_follows_the_language() {
+        let mut h = two_boxes(false);
+        h.app.preferences.language = "ja".into();
+        h.frames(2);
+        let painted = |h: &Harness| -> Vec<String> {
+            let output = egui::FullOutput { shapes: h.shapes.clone(), ..Default::default() };
+            crate::test_support::text_shapes(&output).map(|t| t.galley.text().to_string()).collect()
+        };
+        // No English on screen: the item shows the reader's language.
+        h.step(&json!({"click": {"handle": "timeline:First"}, "button": "right"})).unwrap();
+        let texts = painted(&h);
+        assert!(!texts.iter().any(|t| t == "Suppress Features"), "the English literal is painted in the Japanese UI: {texts:?}");
+        let ja = crate::i18n::Locale::for_language("ja").text("timeline.suppress_features").to_string();
+        let ja_unsuppress = crate::i18n::Locale::for_language("ja").text("timeline.unsuppress_features").to_string();
+        assert!(texts.contains(&ja), "the item must read {ja}: {texts:?}");
+        h.step(&json!({"key": "Escape"})).unwrap();
+        // A suppressed feature offers the other way round.
+        let first = h.app.session.doc.find_feature("First").map(|f| f.id).unwrap();
+        h.app.run("timeline.suppress", json!({"feature": first, "suppressed": true})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click": {"handle": "timeline:First"}, "button": "right"})).unwrap();
+        let texts = painted(&h);
+        assert!(!texts.iter().any(|t| t == "Unsuppress Features"), "the English literal is painted in the Japanese UI: {texts:?}");
+        assert!(texts.contains(&ja_unsuppress), "the item must read {ja_unsuppress}: {texts:?}");
+        h.step(&json!({"key": "Escape"})).unwrap();
+        // The English wording is the one the menu always showed: the change adds messages, it
+        // does not reword the item.
+        assert_eq!(crate::i18n::Locale::for_language("en").text("timeline.suppress_features"), "Suppress Features");
+        assert_eq!(crate::i18n::Locale::for_language("en").text("timeline.unsuppress_features"), "Unsuppress Features");
     }
 
     #[test]
@@ -908,6 +972,53 @@ mod tests {
         h.app.run("select.clear", json!({})).unwrap();
         h.frames(4);
         h
+    }
+
+    #[test]
+    fn sketch_context_menu_redefines_the_plane_in_both_timelines() {
+        for left in [false, true] {
+            let mut h = two_boxes(left);
+            let sketch = h.app.run("sketch.create", json!({"plane":"XY","name":"Profile"})).unwrap()["sketch"].as_u64().unwrap();
+            h.app.run("sketch.rectangle.two_point", json!({"p0":[1,1],"p1":[8,6]})).unwrap();
+            h.app.finish_sketch();
+            h.settle();
+            let before = h.app.session.doc.to_json();
+            let raw = serde_json::to_value(h.app.session.doc.sketch(sketch).unwrap()).unwrap();
+            let marker = h.app.session.doc.marker;
+            let undo = h.app.session.undo.len();
+            let item = crate::context_menu::items(&h.app, &crate::context_menu::Target::Sketch { id: sketch })
+                .into_iter()
+                .find(|item| item.id == "ui.redefineSketch")
+                .unwrap();
+            h.step(&json!({"click":{"handle":"timeline:First"},"button":"right"})).unwrap();
+            assert!(h.widget(&item.label).is_none(), "a body feature has no sketch plane");
+            h.step(&json!({"key":"Escape"})).unwrap();
+            for apply in [false, true] {
+                h.step(&json!({"click":{"handle":"timeline:Profile"},"button":"right"})).unwrap();
+                h.step(&json!({"widget":item.label})).unwrap();
+                assert_eq!(h.app.tree.redefine, Some(sketch));
+                assert_eq!(h.app.session.doc.to_json(), before, "opening the menu changes no geometry");
+                h.step(&json!({"widget":"Use XZ plane"})).unwrap();
+                h.settle();
+                h.step(&json!({"click":{"handle":if apply { "dialog:ok" } else { "dialog:cancel" }}})).unwrap();
+                assert!(h.app.tree.redefine.is_none());
+                assert_eq!(h.app.session.doc.marker, marker);
+                assert_eq!(serde_json::to_value(h.app.session.doc.sketch(sketch).unwrap()).unwrap(), raw);
+                if apply {
+                    assert!(matches!(&h.app.session.doc.feature(sketch).unwrap().kind,
+                        FeatureKind::Sketch { plane: PlaneRef::Origin { name }, .. } if name == "XZ"));
+                    assert_eq!(h.app.session.undo.len(), undo + 1);
+                    let after = h.app.session.doc.to_json();
+                    h.app.run("edit.undo", json!({})).unwrap();
+                    assert_eq!(h.app.session.doc.to_json(), before);
+                    h.app.run("edit.redo", json!({})).unwrap();
+                    assert_eq!(h.app.session.doc.to_json(), after);
+                } else {
+                    assert_eq!(h.app.session.doc.to_json(), before);
+                    assert_eq!(h.app.session.undo.len(), undo);
+                }
+            }
+        }
     }
 
     /// A timeline wider than the window scrolls with a plain mouse wheel (#3356).

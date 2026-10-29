@@ -486,3 +486,79 @@ fn an_edge_is_as_deep_as_its_point_under_the_pointer_not_its_middle() {
     let mid = solidcraft_engine::geom::Vec3::new(15.0, 0.0, 2.0);
     assert!((t - want).abs() < 0.5, "depth {t}, the point under the pointer {want}, its middle {}", (mid - o).dot(d));
 }
+
+/// The navigation bar's Orbit, Pan and Zoom: each one's slot and the mode it lights.
+fn lit_modes() -> [(&'static str, crate::viewport::NavMode); 3] {
+    use crate::viewport::NavMode;
+    [("orbit", NavMode::Orbit), ("pan", NavMode::Pan), ("zoom", NavMode::Zoom)]
+}
+
+/// Screen point `at` moved by `d` points right and down.
+fn offset(at: &Value, d: f64) -> Value {
+    json!([at[0].as_f64().unwrap_or_default() + d, at[1].as_f64().unwrap_or_default() + d])
+}
+
+/// A mode lit in the navigation bar owns left drags, not a press held still: the hold opens
+/// the list as it does with no mode lit, and a plain click still selects.
+#[test]
+fn holding_still_opens_the_list_while_a_navigation_mode_is_lit() {
+    for (slot, mode) in lit_modes() {
+        let (mut h, at) = two_lines();
+        h.step(&json!({"click": {"handle": format!("nav:slot:{slot}")}})).unwrap();
+        assert_eq!(h.app.viewport.nav, Some(mode), "{slot} is lit");
+        let cam = h.app.cam;
+        h.step(&json!({"hold": at})).unwrap();
+        assert!(crate::select_other::is_open(&h.app), "a held press opens Select Other with {slot} lit");
+        assert_eq!(h.app.cam, cam, "{slot}: holding still did not move the view");
+        assert!(h.app.session.selection.is_empty(), "{slot}: {:?}", h.app.session.selection);
+        h.step(&json!({"click": {"handle": "select_other:1"}})).unwrap();
+        assert_eq!(curves(&h), ["l2"], "{slot}");
+        h.app.session.selection.clear();
+        h.step(&json!({"click": at})).unwrap();
+        assert_eq!(curves(&h).len(), 1, "{slot}: a click still selects");
+        assert_eq!(h.app.viewport.nav, Some(mode), "{slot} stays lit");
+    }
+}
+
+/// A drag under a lit mode still moves the view and does not open the list, whether it starts
+/// at once or after the press was held still for longer than egui waits to call it a drag.
+#[test]
+fn a_drag_under_a_lit_navigation_mode_moves_the_view_and_opens_nothing() {
+    for (slot, _) in lit_modes() {
+        let (mut h, at) = two_lines();
+        h.step(&json!({"click": {"handle": format!("nav:slot:{slot}")}})).unwrap();
+        let cam = h.app.cam;
+        h.step(&json!({"drag": [at, offset(&at, 40.0)]})).unwrap();
+        assert_ne!(h.app.cam, cam, "{slot}: the drag moved the view");
+        assert!(!crate::select_other::is_open(&h.app), "{slot}: a drag does not open Select Other");
+        assert!(h.app.session.selection.is_empty(), "{slot}: {:?}", h.app.session.selection);
+    }
+}
+
+/// A preset's modifier chord is a gesture to navigate from the press on: Maya's Alt+left held
+/// still on overlapping lines does not open the list, unlike a mode lit in the navigation bar.
+#[test]
+fn a_preset_chord_held_still_does_not_open_the_list() {
+    let (mut h, at) = two_lines();
+    h.app.preferences.nav = "maya".into();
+    let (x, y) = (at[0].as_f64().unwrap_or_default(), at[1].as_f64().unwrap_or_default());
+    h.call("ui.drag", json!({"x0": x, "y0": y, "x1": x, "y1": y, "steps": 1, "hold": 40, "alt": true}));
+    h.settle();
+    assert!(!crate::select_other::is_open(&h.app), "Maya Alt+left held still navigates, it does not open Select Other");
+}
+
+/// Once the list is open, the press it came from does not turn into a drag of the view at
+/// egui's 0.8 s mark: the camera stays put under the open list while the pointer moves to a row.
+#[test]
+fn a_press_that_opened_the_list_does_not_move_the_view_when_it_moves_on() {
+    for (slot, _) in lit_modes() {
+        let (mut h, at) = two_lines();
+        h.step(&json!({"click": {"handle": format!("nav:slot:{slot}")}})).unwrap();
+        let cam = h.app.cam;
+        let (x, y) = (at[0].as_f64().unwrap_or_default(), at[1].as_f64().unwrap_or_default());
+        h.call("ui.drag", json!({"x0": x, "y0": y, "x1": x + 40.0, "y1": y + 40.0, "steps": 8, "hold": 60}));
+        h.settle();
+        assert!(crate::select_other::is_open(&h.app), "{slot}: the list stays open");
+        assert_eq!(h.app.cam, cam, "{slot}: the view did not move under the open list");
+    }
+}

@@ -352,6 +352,14 @@ fn lex_spans(s: &str) -> Result<Vec<(Tok, usize, usize)>, DocError> {
     {
         i = k + 1;
     }
+    // A value typed as a definition, `name = expression` (#4071), is worth its expression: the
+    // name is what it defines, not part of it (`Document::define_inline` stores it apart).
+    if i == 0
+        && definition(s).is_some()
+        && let Some(eq) = s.find('=')
+    {
+        i = cs.iter().position(|(b, _)| *b > eq).unwrap_or(cs.len());
+    }
     while let Some(&(_, c)) = cs.get(i) {
         if c.is_whitespace() {
             i += 1;
@@ -565,6 +573,10 @@ pub fn rename_reference(s: &str, old: &str, new: &str) -> String {
 
 /// Is the expression just a number (with an optional unit), like `20`, `20 mm` or `-1.5 in`?
 pub fn is_literal(s: &str) -> bool {
+    // A definition names its value: it is not just a number, whatever it defines (#4071).
+    if definition(s).is_some() {
+        return false;
+    }
     let Ok(toks) = lex(s) else { return false };
     let toks: &[Tok] = match toks.first() {
         Some(Tok::Op('-' | '+')) => toks.get(1..).unwrap_or_default(),
@@ -592,8 +604,8 @@ fn is_name_shaped(s: &str) -> bool {
 /// A value typed as a definition, `name = expression` (or `#name = expression`, #2371): the name
 /// without the `#` and the text after the first `=`, both trimmed (the text may be empty). `None` for anything else, including text whose
 /// left side is not shaped like a name (`2 = 3`), which stays an ordinary expression and fails
-/// to parse as before. The dimension input defines a user parameter this way (#2916); other
-/// value inputs can take the same form later.
+/// to parse as before. Every value input defines a user parameter this way (#2916, #4071): until
+/// `Document::define_inline` stores the parameter, the text evaluates as its expression.
 pub fn definition(s: &str) -> Option<(&str, &str)> {
     let (name, rhs) = s.split_once('=')?;
     let name = name.trim();
@@ -979,6 +991,9 @@ pub fn eval_with(s: &str, lookup: &dyn Fn(&str) -> Result<Value, DocError>) -> R
 pub fn eval_with_defaults(s: &str, lookup: &dyn Fn(&str) -> Result<Value, DocError>, defaults: Defaults) -> Result<Value, DocError> {
     let (toks, spans): (Vec<Tok>, Vec<(usize, usize)>) = lex_spans(s)?.into_iter().map(|(t, a, b)| (t, (a, b))).unzip();
     if toks.is_empty() {
+        if let Some((name, _)) = definition(s) {
+            return Err(DocError::Expr(format!("`{name} =` needs a value after the `=`")));
+        }
         return Err(DocError::Expr("empty expression".into()));
     }
     let mut p = Parser { toks, spans, pos: 0, lookup, depth: 0, defaults };
@@ -1467,6 +1482,27 @@ mod tests {
             "w == 3",
         ] {
             assert_eq!(definition(text), None, "{text:?}");
+        }
+    }
+
+    /// Until the design stores it, a definition is worth its expression (#4071): the name is
+    /// not a reference, it is never a plain number, and it renames like its expression.
+    #[test]
+    fn a_definition_evaluates_as_its_expression() {
+        let look = |n: &str| if n == "a" { Ok(Value::length(4.0)) } else { Err(DocError::Expr(format!("unknown parameter `{n}`"))) };
+        let ev = |s: &str| eval_with(s, &look).and_then(|v| v.to_kind(Kind::Length));
+        assert_eq!(ev("w = 20").ok(), Some(20.0));
+        assert_eq!(ev("#w = a * 2").ok(), Some(8.0));
+        assert_eq!(ev("szerokość=1 in").ok(), Some(25.4));
+        assert_eq!(references("w = a + b"), ["a", "b"]);
+        assert!(references("w = 3").is_empty());
+        assert_eq!(rename_reference("w = a * 2", "a", "len"), "w = len * 2");
+        assert_eq!(rename_reference("a = a * 2", "a", "len"), "a = len * 2");
+        assert!(!is_literal("w = 20") && !is_bare_number("w = 20"));
+        assert!(ev("w = w").unwrap_err().to_string().contains("unknown parameter `w`"));
+        assert!(ev("w =").unwrap_err().to_string().contains("`w =` needs a value after the `=`"));
+        for bad in ["w = = 3", "2 = 3", "w == 3", "w = 3 = 4", "= 5 ="] {
+            assert!(ev(bad).is_err(), "{bad}");
         }
     }
 

@@ -20,7 +20,7 @@ Keep it this small. Every change is marked with a `bh:` comment.
 |---|---|
 | `crates/ui-egui/src/bh_plugins.rs` | New: the plug-in host. |
 | `crates/ui-egui/src/lib.rs` | `pub mod bh_plugins;`; `bh_plugins::pump(self, ctx)` in `SolveApp::logic` just before `poll_control_jobs`; `bh_plugins::show(self, ui.ctx())` at the end of `SolveApp::ui`. |
-| `crates/ui-egui/src/toolbar.rs` | In `app_bar`, right after the Update pill: `bh_plugins::app_bar(...)`, and `tabs_end` stops before its buttons. `RIGHT_GROUP` is 92 (upstream 60) so the longer version fits. |
+| `crates/ui-egui/src/toolbar.rs` | In `app_bar`, right after the Update pill: `bh_plugins::app_bar(...)`, and `tabs_end` stops before its buttons. |
 | `crates/ui-egui/src/update.rs` | `SOLIDCRAFT_BH_REPO` (set by our CI at build time) points update checks at this repository; `is_newer` accepts `-bh.N`. |
 | `packaging/linux/package.sh` | Copies `BH_PLUGINS_DIR` to `usr/share/solidcraft/plugins`. |
 | `.github/workflows/*` | Upstream's workflows are deleted: this repository has none of their secrets, and they must not run on its schedules, pull requests or releases. Only `bh-*.yml` stays. |

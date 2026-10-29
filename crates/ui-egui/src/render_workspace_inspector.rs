@@ -1,17 +1,19 @@
 //! Contextual native Render UI. One workspace, existing command authority and shared controls.
 //! Page navigation is per document; unsupported backend capabilities never emit dummy parameters.
 use super::{ImageMethod, cpu, library, materials, setups, studio};
-use crate::{SolveApp, theme::Tokens, ui_kit};
+use crate::{SolveApp, ui_kit};
 use serde_json::{Value, json};
 use solidcraft_engine::doc::Document;
 use std::sync::{Arc, Weak};
+
+#[path = "render_ui/appearance.rs"]
+mod selection_appearance;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Page {
     #[default]
     Scene,
     Appearance,
-    Aging,
     Effects,
     Lighting,
     Environment,
@@ -19,13 +21,14 @@ pub(super) enum Page {
     Camera,
     Output,
     Diagnostics,
+    #[cfg(test)]
     All,
 }
 impl Page {
-    const ALL: [Self; 11] = [
+    #[cfg(test)]
+    const ALL: [Self; 10] = [
         Self::Scene,
         Self::Appearance,
-        Self::Aging,
         Self::Lighting,
         Self::Environment,
         Self::Background,
@@ -39,7 +42,6 @@ impl Page {
         match self {
             Self::Scene => "render.page_scene",
             Self::Appearance => "render.page_appearance",
-            Self::Aging => "render.page_aging",
             Self::Effects => "render.page_effects",
             Self::Lighting => "render.page_lighting",
             Self::Environment => "render.page_environment",
@@ -47,6 +49,7 @@ impl Page {
             Self::Camera => "render.page_camera",
             Self::Output => "render.page_output",
             Self::Diagnostics => "render.page_diagnostics",
+            #[cfg(test)]
             Self::All => "render.page_all",
         }
     }
@@ -54,7 +57,6 @@ impl Page {
         match self {
             Self::Scene => "scene",
             Self::Appearance => "appearance",
-            Self::Aging => "aging",
             Self::Effects => "effects",
             Self::Lighting => "lighting",
             Self::Environment => "environment",
@@ -62,6 +64,7 @@ impl Page {
             Self::Camera => "camera",
             Self::Output => "output",
             Self::Diagnostics => "diagnostics",
+            #[cfg(test)]
             Self::All => "all",
         }
     }
@@ -69,7 +72,6 @@ impl Page {
         match self {
             Self::Scene => "render_scene",
             Self::Appearance => "appearance",
-            Self::Aging => "appearance",
             Self::Effects => "camera",
             Self::Lighting => "settings",
             Self::Environment => "environment_map",
@@ -77,6 +79,7 @@ impl Page {
             Self::Camera => "camera",
             Self::Output => "export",
             Self::Diagnostics => "inspect",
+            #[cfg(test)]
             Self::All => "list",
         }
     }
@@ -84,9 +87,9 @@ impl Page {
 #[derive(Clone, Debug)]
 pub(super) struct View {
     pub effects: super::effects::View,
+    pub hidden: bool,
     pub page: Page,
     reveal: Option<&'static str>,
-    pub library_open: bool,
     pending: Option<Pending>,
     shot_name: String,
     scene_review: Option<Review>,
@@ -100,13 +103,15 @@ pub(super) struct View {
     ground_color: [f64; 3],
     replace_ground: bool,
     appearance: Appearance,
-    resolution: Resolution,
+    selection_appearance: selection_appearance::View,
+    pub(super) resolution: Resolution,
 }
 /// Editor-only coupling. The fixed rational anchor prevents repeated rounded
 /// edits drifting; external preset/shot changes deliberately establish a new anchor.
 #[derive(Clone, Debug, Default)]
-struct Resolution {
+pub(super) struct Resolution {
     locked: bool,
+    pub(super) custom: bool,
     anchor: Option<[u32; 2]>,
     observed: Option<[u32; 2]>,
     rejected: bool,
@@ -162,6 +167,7 @@ struct Pending {
 #[derive(Clone, Debug)]
 enum PendingAction {
     Switch(String),
+    ManageShot { name: String, command: String },
     Reload,
     Remove(String),
 }
@@ -189,9 +195,9 @@ impl Default for View {
     fn default() -> Self {
         Self {
             effects: Default::default(),
+            hidden: false,
             page: Page::Scene,
             reveal: None,
-            library_open: false,
             pending: None,
             shot_name: String::new(),
             scene_review: None,
@@ -205,6 +211,7 @@ impl Default for View {
             ground_color: [0.18; 3],
             replace_ground: false,
             appearance: Appearance::default(),
+            selection_appearance: Default::default(),
             resolution: Resolution::default(),
         }
     }
@@ -215,6 +222,10 @@ pub(super) fn record_check(app: &mut SolveApp, request: &Value, reply: &Value) {
 }
 
 pub(super) fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
+    if app.render_workspace.view.inspector.hidden {
+        crate::shell::register_panel(app, "render:inspector", None, None);
+        return;
+    }
     setups::refresh_dirty(app);
     if app.render_workspace.revision != app.session.revision && !app.render_workspace.view.dirty {
         setups::load(app);
@@ -222,17 +233,52 @@ pub(super) fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     let bounds = crate::shell::panel_bounds(app, ui.available_rect_before_wrap());
     let mut side = app.preferences.render_inspector_side.clone();
     let mut width = app.preferences.render_inspector_width;
-    let title = app.tr("render.studio_title").to_string();
-    let icon = app.render_workspace.view.inspector.page.icon();
-    let content = ui_kit::Panel::workspace(
+    let output = app.render_workspace.view.inspector.page == Page::Output || app.render_workspace.view.selection == super::RenderSelection::Output;
+    let page = if output { Page::Output } else { app.render_workspace.view.inspector.page };
+    let appearance_editor = page == Page::Appearance;
+    let selection_appearance = appearance_editor && !app.session.selection.is_empty();
+    let title = if selection_appearance {
+        app.session
+            .selection
+            .last()
+            .and_then(|item| match item {
+                solidcraft_engine::Sel::Body { name } | solidcraft_engine::Sel::Face { body: name, .. } => Some(name.clone()),
+                solidcraft_engine::Sel::Occurrence { path } => app.session.occurrence_placement(path).ok().map(|placement| placement.name),
+                _ => None,
+            })
+            .unwrap_or_else(|| app.tr("render.inspector").to_owned())
+    } else {
+        app.tr(if output { "render.page_output" } else { "render.studio_title" }).to_string()
+    };
+    let icon = if selection_appearance { "body" } else { page.icon() };
+    let scope = selection_appearance::scope_label(app).to_owned();
+    let header_action = std::cell::Cell::new(None);
+    let content = ui_kit::Panel::workspace_with_header(
         ui,
-        ui_kit::WorkspaceOptions { id: "render:inspector", title: &title, icon, bounds, fill_height: true },
+        ui_kit::WorkspaceOptions {
+            id: "render:inspector",
+            title: &title,
+            icon,
+            bounds,
+            fill_height: true,
+            compact: crate::render_ui::compact(app, bounds.width()),
+            editor: appearance_editor,
+            enabled: true,
+            header_actions: None,
+        },
         &mut side,
         &mut width,
+        false,
+        |ui, options| {
+            if appearance_editor {
+                header_action.set(ui_kit::inspector_header(ui, options.icon, options.title, &scope));
+            } else {
+                ui_kit::panel::header(ui, options.icon, options.title, || header_action.set(Some(ui_kit::InspectorAction::Close)));
+            }
+        },
         |ui| {
-            ui_kit::scope(ui, |ui| {
+            if !appearance_editor && !output {
                 header(app, ui);
-                pages(app, ui);
                 ui_kit::Panel::pinned_footer(ui, "render_job_footer", 4, |ui| {
                     ui.separator();
                     super::job_controls(app, ui, true);
@@ -243,73 +289,65 @@ pub(super) fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                     }
                     crate::scenario::publish_rect("render:job-footer", ui.min_rect());
                 });
-                let page = app.render_workspace.view.inspector.page;
-                egui::ScrollArea::vertical().id_salt(("render_inspector", page.handle(), app.docs.active)).auto_shrink([false, false]).show(
-                    ui,
-                    |ui| {
+            }
+            if appearance_editor {
+                ui_kit::Panel::editor_footer(ui, "render_appearance_footer", |ui| selection_appearance::footer(app, ui));
+            }
+            egui::ScrollArea::vertical()
+                .max_width(ui.available_width())
+                .id_salt(("render_inspector", page.handle(), app.docs.active))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if !appearance_editor && !output {
                         ui_kit::text(ui, app.tr(page.key()), ui_kit::Text::Heading(page.key()));
-                        match page {
-                            Page::Scene => scene_controls(app, ui),
-                            Page::Appearance => appearance_controls(app, ui),
-                            Page::Aging => super::effects::aging_controls(app, ui),
-                            Page::Effects => super::effects::presentation_controls(app, ui),
-                            Page::Lighting => lighting_controls(app, ui),
-                            Page::Environment => environment_controls(app, ui),
-                            Page::Background => background_controls(app, ui),
-                            Page::Camera => camera_controls(app, ui),
-                            Page::Output => output_controls(app, ui),
-                            Page::Diagnostics => diagnostics(app, ui),
-                            Page::All => {
-                                ui_kit::text(ui, app.tr("render.all_controls_help"), ui_kit::Text::Note("render.all_controls_help"));
-                                camera_actions(app, ui);
-                                let title = app.tr("render.page_camera").to_string();
-                                ui_kit::section(ui, "render_all_camera", &title, false, |ui| camera_controls(app, ui));
-                                let title = app.tr("render.page_aging").to_string();
-                                ui_kit::section(ui, "render_all_aging", &title, false, |ui| super::effects::aging_controls(app, ui));
-                                super::image_edit_controls(app, ui);
-                            }
+                    }
+                    match page {
+                        Page::Scene => scene_controls(app, ui),
+                        Page::Appearance => appearance_controls(app, ui),
+                        Page::Effects => super::effects::presentation_controls(app, ui),
+                        Page::Lighting => lighting_controls(app, ui),
+                        Page::Environment => environment_controls(app, ui),
+                        Page::Background => background_controls(app, ui),
+                        Page::Camera => camera_controls(app, ui),
+                        Page::Output => output_editor(app, ui),
+                        Page::Diagnostics => diagnostics(app, ui),
+                        #[cfg(test)]
+                        Page::All => {
+                            ui_kit::text(ui, app.tr("render.all_controls_help"), ui_kit::Text::Note("render.all_controls_help"));
+                            camera_actions(app, ui);
+                            let title = app.tr("render.page_camera").to_string();
+                            ui_kit::section(ui, "render_all_camera", &title, false, |ui| camera_controls(app, ui));
+                            let title = app.tr("render.page_aging").to_string();
+                            ui_kit::section(ui, "render_all_aging", &title, false, |ui| super::effects::aging_controls(app, ui));
+                            super::image_edit_controls(app, ui);
                         }
-                        setups::refresh_dirty(app);
-                    },
-                );
-            });
+                    }
+                    setups::refresh_dirty(app);
+                });
         },
     );
-    app.preferences.render_inspector_width = width;
-    if app.preferences.render_inspector_side != side {
-        app.preferences.render_browser_side = if side == "left" { "right" } else { "left" }.into();
+    match header_action.get() {
+        Some(ui_kit::InspectorAction::Close) => {
+            let _ = app.run("view.render_inspector", json!({"visible":false}));
+        }
+        Some(ui_kit::InspectorAction::Remove) => selection_appearance::remove(app),
+        None => {}
     }
-    app.preferences.render_inspector_side = side.clone();
+    app.preferences.render_inspector_width = width;
+    let requested = content
+        .as_ref()
+        .and_then(|c| c.inner.1)
+        .map(str::to_string)
+        .or_else(|| (app.preferences.render_inspector_side != side).then(|| side.clone()));
+    if let Some(side) = requested {
+        let _ = app.run("view.render_dock", serde_json::json!({"panel":"inspector","side":side}));
+    }
     let rect = content.map(|c| c.response.rect);
     crate::shell::register_panel(app, "render:inspector", rect, Some(if side == "left" { ui_kit::Edge::Left } else { ui_kit::Edge::Right }));
     if let Some(rect) = rect {
         crate::scenario::publish_rect("render:inspector", rect);
     }
     confirmation(app, ui.ctx());
-}
-fn pages(app: &mut SolveApp, ui: &mut egui::Ui) {
-    let page = app.render_workspace.view.inspector.page;
-    let mut index = Page::ALL.iter().position(|p| *p == page).unwrap_or(0);
-    let options: Vec<_> =
-        Page::ALL.iter().map(|page| ui_kit::IconSegment { key: page.handle(), icon: page.icon(), tip: app.tr(page.key()).to_string() }).collect();
-    let top = ui.cursor().min;
-    let width = ui.available_width();
-    let height = ui_kit::row_height();
-    if ui_kit::segmented_icons(ui, &mut index, &options, &[])
-        && let Some(page) = Page::ALL.get(index)
-    {
-        app.render_workspace.view.inspector.page = *page;
-    }
-    for (i, page) in Page::ALL.iter().enumerate() {
-        crate::scenario::publish_target(
-            &format!("render:page:{}", page.handle()),
-            egui::Rect::from_min_size(
-                top + egui::vec2(width * i as f32 / Page::ALL.len() as f32, 0.0),
-                egui::vec2(width / Page::ALL.len() as f32, height),
-            ),
-        );
-    }
-    ui.add_space(Tokens::get().space_4);
 }
 fn header(app: &mut SolveApp, ui: &mut egui::Ui) {
     let current = app.render_workspace.view.name.clone();
@@ -346,20 +384,26 @@ fn header(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
     let status = if app.render_workspace.view.dirty { app.tr("render.unsaved") } else { app.tr("render.studio_saved") };
     ui.add_sized([ui.available_width(), ui.text_style_height(&egui::TextStyle::Body)], egui::Label::new(status).truncate());
-    if app.render_workspace.view.inspector.page != Page::All {
+    {
         let labels = [app.tr("render.result_preview").to_string(), app.tr("render.result_title").to_string()];
         let mut value = usize::from(app.render_workspace.view.result);
         if ui_kit::segmented(ui, &mut value, &labels.iter().map(String::as_str).collect::<Vec<_>>(), Default::default()) {
-            app.render_workspace.view.result = value == 1;
-            app.cancel_view_animation();
-            app.viewport.key_hold = None;
-            app.viewport.orbit_free = None;
+            let _ = app.run("render.result.view", json!({"view":if value == 1 {"image"} else {"model"}}));
         }
     }
 }
 pub(super) fn switch_shot(app: &mut SolveApp, name: String) {
     setups::refresh_dirty(app);
     request_action(app, PendingAction::Switch(name));
+}
+
+pub(super) fn shot_row_action(app: &mut SolveApp, name: String, command: &str) {
+    setups::refresh_dirty(app);
+    if command == "render.shot.remove" {
+        request_action(app, PendingAction::Remove(name));
+    } else {
+        request_action(app, PendingAction::ManageShot { name, command: command.into() });
+    }
 }
 
 fn request_action(app: &mut SolveApp, action: PendingAction) {
@@ -376,16 +420,26 @@ fn perform_action(app: &mut SolveApp, action: PendingAction) -> Result<(), Strin
             app.render_workspace.view.name = name;
             setups::load(app);
         }
+        PendingAction::ManageShot { name, command } => {
+            app.render_workspace.view.name = name;
+            setups::load(app);
+            // The existing manager owns name validation and command execution.
+            app.start(&command);
+        }
         PendingAction::Reload => setups::load(app),
         PendingAction::Remove(name) => {
             app.run("render.shot.remove", json!({"name":name,"expected_revision":app.session.revision}))?;
-            app.render_workspace.view.name = app.session.doc.render.setups.keys().next().cloned().unwrap_or_else(|| "Studio".into());
-            setups::load(app);
+            if name == app.render_workspace.view.name {
+                app.render_workspace.view.name = app.session.doc.render.setups.keys().next().cloned().unwrap_or_else(|| "Studio".into());
+                setups::load(app);
+            }
         }
     }
     Ok(())
 }
 fn confirmation(app: &mut SolveApp, ctx: &egui::Context) {
+    super::shots::confirmation(app, ctx);
+    materials::confirmation(app, ctx);
     let Some(pending) = app.render_workspace.view.inspector.pending.clone() else { return };
     if pending.revision != app.session.revision || !Weak::ptr_eq(&pending.document, &Arc::downgrade(&app.session.doc)) {
         app.render_workspace.view.inspector.pending = None;
@@ -572,16 +626,21 @@ fn shot_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
 }
 fn appearance_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    if selection_appearance::controls(app, ui) {
+        return;
+    }
     ui_kit::text(ui, app.tr("render.appearance_physics_separate"), ui_kit::Text::Note("render.appearance_physics_separate"));
     base_appearance(app, ui);
+    materials::controls(app, ui);
+    let title = app.tr("render.inspector_advanced").to_owned();
+    reveal_section(app, ui, "render:appearance:advanced");
+    ui_kit::section(ui, "render:appearance:advanced", &title, false, |ui| advanced_appearance_controls(app, ui));
+}
+fn advanced_appearance_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     browse_button(app, ui, "surfaces", "render.browse_surfaces");
     browse_button(app, ui, "physical_profiles", "render.browse_physical");
     library::inspect_kinds(app, ui, &["surfaces", "materials", "selene_appearances", "physical_profiles"]);
-    library::saved_surface_controls(app, ui);
-    materials::controls(app, ui);
-    if app.render_workspace.view.method == ImageMethod::CpuRaytrace {
-        cpu::reflection_controls(app, ui);
-    }
+    super::effects::aging_controls(app, ui);
 }
 fn lighting_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     browse_button(app, ui, "rigs", "render.browse_rigs");
@@ -633,6 +692,27 @@ pub(super) fn apply_camera_draft(app: &mut SolveApp, camera: solidcraft_engine::
 }
 
 fn camera_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    if super::shots::camera_modified(app, &app.render_workspace.view.name) {
+        ui_kit::banner(ui, ui_kit::AssistantTone::Warning, |ui| {
+            ui_kit::text(ui, app.tr("render.shots_camera_changed"), ui_kit::Text::Note("render.shots_camera_changed"));
+            ui.horizontal_wrapped(|ui| {
+                let update = ui_kit::primary_button(ui, app.tr("render.shots_update"));
+                crate::scenario::publish_target("render:shots:update", update.rect);
+                if update.clicked()
+                    && let Err(error) = super::shots::update_camera(app)
+                {
+                    app.set_status(error, true);
+                }
+                let revert = ui_kit::button(ui, app.tr("render.shots_revert"), ui_kit::Button::Normal);
+                crate::scenario::publish_target("render:shots:revert", revert.rect);
+                if revert.clicked()
+                    && let Err(error) = restore_camera(app)
+                {
+                    app.set_status(error, true);
+                }
+            });
+        });
+    }
     ui_kit::text(ui, app.tr("render.camera_exact_help"), ui_kit::Text::Note("render.camera_exact_help"));
     let before = app.cam;
     let mut camera = before;
@@ -674,15 +754,58 @@ fn camera_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         if ui_kit::button(ui, app.tr("render.result_fit"), ui_kit::Button::Normal).clicked() {
             super::fit_result(app);
         }
-        if ui_kit::button(ui, "100%", ui_kit::Button::Enabled(!super::reduced_display(app))).clicked() {
+        if ui_kit::button(ui, crate::i18n::tr("render.result_actual_size"), ui_kit::Button::Enabled(!super::reduced_display(app))).clicked() {
             app.render_workspace.view.result_scale = super::ResultScale::Actual;
         }
     }
 }
+fn output_editor(app: &mut SolveApp, ui: &mut egui::Ui) {
+    for (id, key, draw) in [
+        ("render_output_image", "render.output_image", output_controls as fn(&mut SolveApp, &mut egui::Ui)),
+        ("render_output_effects", "render.output_effects", super::effects::presentation_controls),
+        ("render_output_check", "render.output_check", check_controls),
+    ] {
+        reveal_section(app, ui, id);
+        let title = app.tr(key).to_string();
+        ui_kit::section(ui, id, &title, id != "render_output_effects", |ui| draw(app, ui));
+    }
+}
+fn check_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let ready = super::ribbon::action_ready(app, "render.preflight");
+    let check = ui_kit::button(ui, app.tr("render.output_check"), ui_kit::Button::Enabled(ready.is_ok()));
+    crate::scenario::publish_target("render:check", check.rect);
+    if check.clicked() {
+        app.start("render.preflight");
+    }
+    if let Err(reason) = ready {
+        check.on_disabled_hover_text(reason);
+    }
+    output_check(app, ui);
+    let title = app.tr("cmd.render_backends").to_string();
+    ui_kit::section(ui, "render_output_backends", &title, false, |ui| {
+        gpu_status(app, ui);
+        let backend = app.session.render_backend();
+        ui_kit::text(ui, &backend.label, ui_kit::Text::Inline);
+        for executor in backend.executors.iter().take(16) {
+            let status = match &executor.availability {
+                super::Availability::Available => app.tr("render.output_backend_ready"),
+                super::Availability::Unavailable { reason } => reason,
+            };
+            let label = format!("{} · {status}", executor.id.as_str());
+            ui_kit::text(ui, &label, ui_kit::Text::Report(executor.id.as_str(), false));
+        }
+        if let Some(job) = app.render_workspace.view.job
+            && let Ok(status) = app.session.execute("render.status", &json!({"job":job}))
+            && let Some(phase) = status["progress"]["phase"].as_str()
+        {
+            ui_kit::text(ui, app.tr(&format!("render.image_{phase}")), ui_kit::Text::Inline);
+        }
+    });
+    let title = app.tr("render.page_diagnostics").to_string();
+    ui_kit::section(ui, "render_output_diagnostics", &title, false, |ui| diagnostics(app, ui));
+}
+
 fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
-    studio::export_controls(app, ui);
-    super::method_selector(app, ui);
-    gpu_status(app, ui);
     let side = match app.render_workspace.view.method {
         ImageMethod::CpuRaytrace => 16384,
         ImageMethod::GpuRaytrace => 8192,
@@ -692,11 +815,8 @@ fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     app.render_workspace.view.inspector.resolution.observe(before);
     let mut width = before[0];
     let mut height = before[1];
-    let label = app.tr("render.image_width").to_string();
-    let w = ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut width, 1..=side, 1.0, " px"));
+    let [w, h] = ui_kit::number_pair(ui, app.tr("render.output_dimensions"), [&mut width, &mut height], 1..=side, 1.0, "");
     crate::scenario::publish_target("render:output-width", w.rect);
-    let label = app.tr("render.image_height").to_string();
-    let h = ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut height, 1..=side, 1.0, " px"));
     crate::scenario::publish_target("render:output-height", h.rect);
     let edit = if w.changed() {
         Some((0, width))
@@ -707,49 +827,65 @@ fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     };
     if let Some((axis, value)) = edit
         && let Some([width, height]) = app.render_workspace.view.inspector.resolution.edit(before, axis, value, side)
+        && let Err(error) = app.run("render.output.size", json!({"width":width,"height":height,"custom":true}))
     {
-        app.render_workspace.view.draft.width = width;
-        app.render_workspace.view.draft.height = height;
-    }
-    let label = app.tr("render.output_lock_ratio").to_string();
-    let lock = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.inspector.resolution.locked);
-    crate::scenario::publish_target("render:aspect-lock", lock.rect);
-    let swap = ui_kit::button(ui, app.tr("render.output_swap_orientation"), ui_kit::Button::Normal);
-    crate::scenario::publish_target("render:swap-size", swap.rect);
-    if swap.clicked() {
-        let draft = &mut app.render_workspace.view.draft;
-        std::mem::swap(&mut draft.width, &mut draft.height);
-        app.render_workspace.view.inspector.resolution.observe([draft.width, draft.height]);
+        app.render_workspace.view.inspector.resolution.observe(before);
+        app.render_workspace.view.inspector.resolution.rejected = true;
+        app.set_status(error, true);
     }
     if app.render_workspace.view.inspector.resolution.rejected {
         ui_kit::text(ui, app.tr("render.output_ratio_refused"), ui_kit::Text::Error("render.output_ratio_refused"));
     }
-    ui.horizontal_wrapped(|ui| {
-        for (label, width, height) in [("HD", 1280, 720), ("Full HD", 1920, 1080), ("4K UHD", 3840, 2160)] {
-            if ui_kit::button(ui, label, ui_kit::Button::Normal).clicked() {
-                app.render_workspace.view.draft.width = width;
-                app.render_workspace.view.draft.height = height;
-            }
-        }
-    });
+    let largest = largest_output(app);
+    let (w, h) = largest.map_or_else(|| ("—".to_string(), "—".to_string()), |(w, h)| (w.to_string(), h.to_string()));
+    let largest_label = crate::i18n::format("render.output_largest", &[("width", &w), ("height", &h)]);
+    for choices in [
+        ("720", crate::i18n::tr("render.size_hd").to_string(), Some((1280, 720))),
+        ("1080", crate::i18n::tr("render.size_full_hd").to_string(), Some((1920, 1080))),
+        ("4k", crate::i18n::tr("render.size_4k_uhd").to_string(), Some((3840, 2160))),
+        ("largest", largest_label, largest),
+    ]
+    .chunks(2)
+    {
+        ui_kit::catalog_scope(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (key, label, size) in choices {
+                    let allowed = size.filter(|&(w, h)| cpu::image_limits(app).fit(w, h, None) == Some((w, h)));
+                    let response = ui
+                        .add_enabled_ui(allowed.is_some(), |ui| {
+                            ui_kit::choice_chip(ui, key, label, *size == Some((u64::from(before[0]), u64::from(before[1]))))
+                        })
+                        .inner;
+                    crate::scenario::publish_target(&format!("render:size:{key}"), response.rect);
+                    if response.on_disabled_hover_text(app.tr("render.output_over_budget")).clicked()
+                        && let Some((w, h)) = allowed
+                    {
+                        let _ = app.run("render.output.size", json!({"width":w,"height":h}));
+                    }
+                }
+            })
+        });
+    }
+    studio::export_controls(app, ui);
+    ui_kit::text(ui, app.tr("render.output_quality"), ui_kit::Text::Inline);
+    quality_choices(app, ui);
+    ui.scope(|ui| super::method_selector(app, ui)).response.on_hover_text(app.tr("render.method_limit_raster"));
     let size = (u64::from(app.render_workspace.view.draft.width), u64::from(app.render_workspace.view.draft.height));
     if cpu::image_limits(app).fit(size.0, size.1, None) != Some(size) {
         ui_kit::text(ui, app.tr("render.output_over_budget"), ui_kit::Text::Error("render.output_over_budget"));
     }
     match app.render_workspace.view.method {
         ImageMethod::GpuRaytrace => {
+            super::transport::sampling_controls(app, ui);
             let label = app.tr("render.image_samples").to_string();
             ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.samples, 1..=4096, 1.0, ""));
             let label = app.tr("render.gpu_depth").to_string();
             ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.max_depth, 1..=16, 1.0, ""));
             let label = app.tr("render.gpu_seed").to_string();
             ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.seed, 0..=u32::MAX, 1.0, ""));
-            studio::finishing_controls(app, ui);
         }
         ImageMethod::CpuRaytrace => super::cpu_sampling_controls(app, ui),
-        ImageMethod::Raster => {
-            ui_kit::text(ui, app.tr("render.method_limit_raster"), ui_kit::Text::Note("render.method_limit_raster"));
-        }
+        ImageMethod::Raster => {}
     }
     if app.render_workspace.view.method != ImageMethod::Raster {
         let label = app.tr("render.image_exposure").to_string();
@@ -757,13 +893,173 @@ fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     let label = app.tr("render.image_transparent").to_string();
     ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.transparent);
-    ui_kit::text(ui, app.tr("render.output_format_status"), ui_kit::Text::Note("render.output_format_status"));
+
     let label = app.tr("render.image_overwrite").to_string();
     ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.overwrite);
-    browse_button(app, ui, "quality", "render.browse_quality");
-    library::inspect_kinds(app, ui, &["quality"]);
-    super::completed_image(app, ui);
-    ui_kit::text(ui, app.tr("render.adaptive_pending"), ui_kit::Text::Note("render.adaptive_pending"));
+    let label = app.tr("render.output_destination").to_string();
+    let export = ui_kit::row(ui, &label, |ui| {
+        ui_kit::button(ui, studio::export_label(app), ui_kit::Button::Enabled(super::ribbon::action_ready(app, "render.export").is_ok()))
+    });
+    if export.on_hover_text(app.tr("render.output_destination_help")).clicked() {
+        app.start("render.export");
+    }
+    if app.render_workspace.view.completed.is_some() && ui_kit::button(ui, app.tr("render.output_view_image"), ui_kit::Button::Normal).clicked() {
+        let _ = app.run("render.result.view", json!({"view":"image"}));
+    }
+    reveal_section(app, ui, "render_output_advanced");
+    let title = app.tr("render.output_advanced").to_string();
+    ui_kit::section(ui, "render_output_advanced", &title, false, |ui| {
+        let label = app.tr("render.output_lock_ratio").to_string();
+        let lock = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.inspector.resolution.locked);
+        crate::scenario::publish_target("render:aspect-lock", lock.rect);
+        let swap = ui_kit::button(ui, app.tr("render.output_swap_orientation"), ui_kit::Button::Normal);
+        crate::scenario::publish_target("render:swap-size", swap.rect);
+        if swap.clicked() {
+            let _ = app.run("render.output.size", json!({"width":before[1],"height":before[0],"custom":true}));
+            let draft = &app.render_workspace.view.draft;
+            app.render_workspace.view.inspector.resolution.observe([draft.width, draft.height]);
+        }
+        ui_kit::text(ui, app.tr("render.output_format_status"), ui_kit::Text::Note("render.output_format_status"));
+        browse_button(app, ui, "quality", "render.browse_quality");
+        library::inspect_kinds(app, ui, &["quality"]);
+        ui_kit::text(ui, app.tr("render.adaptive_pending"), ui_kit::Text::Note("render.adaptive_pending"));
+    });
+}
+
+/// Fit an oversized same-aspect candidate, since fit deliberately never upscales.
+pub(super) fn largest_output(app: &SolveApp) -> Option<(u64, u64)> {
+    let limits = cpu::image_limits(app);
+    let draft = &app.render_workspace.view.draft;
+    limits.fit(u64::from(draft.width).checked_mul(limits.max_dimension)?, u64::from(draft.height).checked_mul(limits.max_dimension)?, None)
+}
+pub(super) fn quality_choices(app: &SolveApp, ui: &mut egui::Ui) {
+    let reason = app.tr("render.output_quality_waiting");
+    let labels = ["render.quality_draft", "render.quality_balanced", "render.quality_high", "render.quality_custom"].map(|key| app.tr(key));
+    let mut quality = 3;
+    ui_kit::segmented(
+        ui,
+        &mut quality,
+        &labels,
+        ui_kit::Segments {
+            workspace_accent: true,
+            intrinsic: true,
+            compact: true,
+            disabled_reasons: &[Some(reason), Some(reason), Some(reason), None],
+            ..Default::default()
+        },
+    );
+}
+pub(super) fn check_summary(app: &SolveApp) -> String {
+    let state = match &app.render_workspace.view.inspector.checked {
+        Some(check) if check.current(app) && super::image_params(app).as_ref().ok() == Some(&check.request) => {
+            let count = check.reply["warnings"].as_array().map_or(0, Vec::len)
+                + usize::from(check.reply["transparency"].as_str().is_some_and(|value| value != "physical_transmission"));
+            return crate::i18n::format("render.output_check_summary", &[("count", &count.to_string())]);
+        }
+        Some(_) => "render.studio_needs_review",
+        None => return app.tr("render.output_check").into(),
+    };
+    format!("{} · {}", app.tr("render.output_check"), app.tr(state))
+}
+
+const SIZE_PRESETS: [(&str, &str, Option<(u32, u32)>); 5] = [
+    ("720", "render.size_preview", Some((1280, 720))),
+    ("1080", "render.size_full_hd", Some((1920, 1080))),
+    ("4k", "render.size_4k", Some((3840, 2160))),
+    ("square", "render.size_square", Some((2048, 2048))),
+    ("custom", "render.size_custom", None),
+];
+fn choose_size(app: &mut SolveApp, size: Option<(u32, u32)>) {
+    let custom = size.is_none();
+    let (width, height) = size.unwrap_or((app.render_workspace.view.draft.width, app.render_workspace.view.draft.height));
+    if let Err(error) = app.run("render.output.size", json!({"width":width,"height":height,"custom":custom})) {
+        app.set_status(error, true);
+    } else if custom {
+        let _ = app.run("view.render_select", json!({"kind":"output"}));
+        reveal(app, "render_output_image");
+    }
+}
+pub(super) fn size_presets(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui_kit::scope(ui, |ui| {
+        let current = (app.render_workspace.view.draft.width, app.render_workspace.view.draft.height);
+        let custom = app.render_workspace.view.inspector.resolution.custom || !SIZE_PRESETS.iter().any(|(_, _, size)| *size == Some(current));
+        for (key, label, size) in SIZE_PRESETS {
+            let summary = size.map_or_else(String::new, |(w, h)| format!("{w} × {h}"));
+            let enabled =
+                size.is_none_or(|(w, h)| cpu::image_limits(app).fit(u64::from(w), u64::from(h), None) == Some((u64::from(w), u64::from(h))));
+            let response = ui
+                .add_enabled_ui(enabled, |ui| {
+                    ui_kit::settings_choice_row(
+                        ui,
+                        &ui_kit::SettingsChoice {
+                            key: &format!("render:preset:{key}"),
+                            title: app.tr(label),
+                            summary: &summary,
+                            detail: app.tr(label),
+                        },
+                        if size.is_none() { custom } else { !custom && size == Some(current) },
+                    )
+                })
+                .inner;
+            if response.on_disabled_hover_text(app.tr("render.output_over_budget")).clicked() {
+                choose_size(app, size);
+            }
+        }
+        ui_kit::text(ui, app.tr("render.output_presets_help"), ui_kit::Text::Note("render.output_presets_help"));
+    });
+}
+pub(super) fn stage_tools(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let (size, _) = super::output_summary(app);
+    let dropdown = ui_kit::compact_dropdown_menu(ui, "render_stage_size", &size, |ui| {
+        for (key, label, size) in SIZE_PRESETS {
+            let enabled =
+                size.is_none_or(|(w, h)| cpu::image_limits(app).fit(u64::from(w), u64::from(h), None) == Some((u64::from(w), u64::from(h))));
+            let response = ui.add_enabled_ui(enabled, |ui| ui_kit::list_picker(ui, key, app.tr(label), false)).inner;
+            crate::scenario::publish_target(&format!("render:stage:size:{key}"), response.rect);
+            if response.on_disabled_hover_text(app.tr("render.output_over_budget")).clicked() {
+                choose_size(app, size);
+                ui.close();
+            }
+        }
+    });
+    crate::scenario::publish_target("render:stage:size", dropdown.rect);
+    studio::format_choices(app, ui);
+    quality_choices(app, ui);
+    let summary = check_summary(app);
+    let response = ui_kit::choice_chip(ui, "render_stage_check", &summary, false).on_hover_text(app.tr("render.output_check_help"));
+    crate::scenario::publish_target("render:stage:check", response.rect);
+    if response.clicked() {
+        app.start("render.preflight");
+    }
+}
+
+fn output_check(app: &SolveApp, ui: &mut egui::Ui) {
+    let Some(check) = &app.render_workspace.view.inspector.checked else {
+        ui_kit::text(ui, app.tr("render.output_check_help"), ui_kit::Text::Note("render.output_check_help"));
+        return;
+    };
+    if !check.current(app) || super::image_params(app).as_ref().ok() != Some(&check.request) {
+        ui_kit::check_line(ui, "render:check:stale", app.tr("render.review_stale"), true);
+        return;
+    }
+    ui_kit::check_line(ui, "render:check:ready", app.tr("render.output_ready"), false);
+    if let (Some(w), Some(h)) = (check.reply["request"]["width"].as_u64(), check.reply["request"]["height"].as_u64()) {
+        let label = crate::i18n::format("render.output_size_ok", &[("width", &w.to_string()), ("height", &h.to_string())]);
+        ui_kit::check_line(ui, "render:check:size", &label, false);
+    }
+    if let Some(transparency) = check.reply["transparency"].as_str() {
+        let key = match transparency {
+            "physical_transmission" => "render.check_transmission",
+            "opaque_only" => "render.check_opaque",
+            _ => "render.check_sorted_alpha",
+        };
+        ui_kit::check_line(ui, "render:check:transparency", app.tr(key), transparency != "physical_transmission");
+    }
+    if let Some(warnings) = check.reply["warnings"].as_array() {
+        for warning in warnings.iter().take(32) {
+            ui_kit::check_line(ui, "render:check:warning", &warning.to_string(), true);
+        }
+    }
 }
 
 pub(super) fn scene_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) {
@@ -853,10 +1149,10 @@ pub(super) fn quality_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) 
 }
 fn apply_quality(app: &mut SolveApp, plan: &Value) -> Result<(), String> {
     if app.render_workspace.view.method != ImageMethod::GpuRaytrace || plan["variant"] != "fixed_samples_png" {
-        return Err("quality projection requires the same explicit GPU method".into());
+        return Err(crate::i18n::tr("render.error_quality_method").into());
     }
     let u32_at = |section: &str, key: &str| {
-        plan[section][key].as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| "invalid native quality projection".to_string())
+        plan[section][key].as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| crate::i18n::tr("render.error_quality_projection").to_string())
     };
     let (width, height, samples, depth, seed) = (
         u32_at("settings", "width")?,
@@ -865,13 +1161,13 @@ fn apply_quality(app: &mut SolveApp, plan: &Value) -> Result<(), String> {
         u32_at("gpu_options", "max_depth")?,
         u32_at("gpu_options", "seed")?,
     );
-    let denoise = plan["gpu_options"]["denoise"].as_bool().ok_or("invalid native denoise setting")?;
+    let denoise = plan["gpu_options"]["denoise"].as_bool().ok_or(crate::i18n::tr("render.error_denoise_setting"))?;
     if !(1..=4096).contains(&samples)
         || !(1..=16).contains(&depth)
         || solidcraft_engine::render::job::GPU_PATH_LIMITS.fit(u64::from(width), u64::from(height), None)
             != Some((u64::from(width), u64::from(height)))
     {
-        return Err("quality projection exceeds native bounds".into());
+        return Err(crate::i18n::tr("render.error_quality_bounds").into());
     }
     let view = &mut app.render_workspace.view;
     view.draft.width = width;
@@ -1100,7 +1396,7 @@ fn camera_actions(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 
 pub(super) fn confirmation_open(app: &SolveApp) -> bool {
-    app.render_workspace.view.inspector.pending.is_some()
+    app.render_workspace.view.inspector.pending.is_some() || app.render_workspace.view.save_shot_name.is_some() || materials::confirmation_open(app)
 }
 pub(super) fn reveal(app: &mut SolveApp, section: &'static str) {
     app.render_workspace.view.inspector.reveal = Some(section);

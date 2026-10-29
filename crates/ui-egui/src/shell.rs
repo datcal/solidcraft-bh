@@ -91,6 +91,9 @@ impl Cards {
 /// Shell panels measured after drawing the full-bleed viewport. No design or preferences data.
 #[derive(Default)]
 pub(crate) struct State {
+    /// Per-window Render view state; neither preferences nor document data.
+    pub render_focus: bool,
+    pub render_browser_open: bool,
     pub cards: Vec<Rect>,
     pub panels: Vec<Rect>,
     /// Actual floating workspace surfaces and their optional canvas reservation.
@@ -109,10 +112,13 @@ pub(crate) struct State {
     pub left_space: Option<Rect>,
     /// The left column an open dialog holds this frame (`dialog_column`).
     pub dialog_column: Option<Rect>,
+    /// The status bar along the window's bottom edge, while it is shown (#7243).
+    pub status_bar: Option<Rect>,
 }
 
 /// Register the actual card, so fitting and pointer shielding use the same rectangle.
 pub(crate) fn register_panel(app: &mut SolveApp, id: &'static str, rect: Option<Rect>, edge: Option<crate::ui_kit::Edge>) {
+    let rect = rect.filter(|_| !crate::render_ui::focused(app) || !id.starts_with("render:") || id == "render:focus:exit");
     if let Some(rect) = rect.filter(|r| r.is_finite() && r.is_positive()) {
         app.shell.workspace_panels.insert(id, (rect, edge));
     } else {
@@ -156,6 +162,7 @@ pub(crate) fn covered_rects(app: &SolveApp) -> Vec<Rect> {
     rects.extend(app.viewport.palette_rect.filter(|_| app.session.active_sketch.is_some()));
     rects.extend(app.viewport.dialog_rect.filter(|_| app.dialog.is_some() || app.tree.redefine.is_some()));
     rects.extend(crate::view_confirm::rect(app));
+    rects.extend(app.shell.status_bar.filter(|_| crate::status_bar::shown(app)));
     rects.retain(|r| r.is_finite() && r.is_positive());
     rects
 }
@@ -193,6 +200,9 @@ pub(crate) fn content_rect(app: &SolveApp, viewport: Rect) -> Rect {
 /// their allocation; content-hugging Browser and floating overlays reserve their measured span.
 pub(crate) fn workspace_content(app: &SolveApp, mut content: Rect) -> Rect {
     if crate::render_workspace::active(app) {
+        if crate::render_ui::focused(app) {
+            return content;
+        }
         let gap = Container::floating_card(Surface::Panel).gap();
         for (rect, edge) in app.shell.workspace_panels.values() {
             match edge {

@@ -268,7 +268,9 @@ a conflict. `crates/doc/src/format/pending/README.md` has an example.
 
 **At release time** the maintainer runs `scripts/fold-format-pending.sh`, which moves the pending
 files into `crates/doc/src/format/v<N>/` and fixes that number for good (see
-[docs/releasing.md](docs/releasing.md)). Never add a file to a `v<N>/` folder afterwards.
+[docs/releasing.md](docs/releasing.md)). Never add a file to a `v<N>/` folder afterwards. Drawings
+follow the same rules with their own numbers, from 1, in `crates/doc/src/drawing/format/` (see its
+`pending/README.md`), and the same script folds them.
 
 ## Lists many changes add to
 
@@ -287,6 +289,9 @@ and a fresh CI run:
 - **Toolbar commands without help** (`BACKLOG` in `crates/ui-egui/src/command_help.rs`): sorted,
   one id per line, and it only shrinks. Writing a command's help removes its line; a new command
   is never added to it.
+- **`ui.prefs` settings** (`docs/control-protocol.md`): one line per setting, sorted by name, in
+  the list under the protocol table; add a new setting on its own line rather than editing a shared
+  row.
 - **Languages** (`crates/ui-egui/src/i18n.rs`): one per line, English first, then by id (a test
   checks it).
 - **Generated files**: `THIRD-PARTY-LICENSES.txt` and `docs/features.md` are rewritten on `main`

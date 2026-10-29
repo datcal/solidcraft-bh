@@ -1582,7 +1582,7 @@ impl Sketch {
                 if !(rho.is_finite() && *rho > 1e-6 && *rho < 1.0 - 1e-6) {
                     return Err(SketchError::Invalid("rho must be between 0 and 1".into()));
                 }
-                "k"
+                "n"
             }
         };
         let id = self.curve_id(id, prefix)?;

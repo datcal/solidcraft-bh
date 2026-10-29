@@ -44,6 +44,37 @@ pub(crate) fn scope<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     .inner
 }
 
+/// Compact library cards share search, segment, chip and footer metrics.
+pub(crate) fn catalog_scope<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.scope_builder(egui::UiBuilder::new().ui_stack_info(egui::UiStackInfo::default().with_tag("sc_catalog")), |ui| {
+        ui.spacing_mut().item_spacing.y = Tokens::get().space_8;
+        add(ui)
+    })
+    .inner
+}
+
+pub(super) fn in_catalog(ui: &Ui) -> bool {
+    ui.stack().iter().any(|node| node.tags().contains("sc_catalog"))
+}
+
+/// Quiet full-width library footer with the shared information glyph.
+pub(crate) fn catalog_footer(ui: &mut Ui, text: &str) {
+    let t = Tokens::get();
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), t.control_height), egui::Sense::hover());
+    t.secondary_hline(ui.painter(), rect.x_range(), rect.top(), t.dialog_rule);
+    let icon = egui::Rect::from_center_size(egui::pos2(rect.left() + t.space_6, rect.center().y), vec2(t.space_12, t.space_12));
+    ui.painter().circle_stroke(icon.center(), t.space_4, t.control_border_stroke(t.form_dim));
+    ui.painter().text(icon.center(), egui::Align2::CENTER_CENTER, "i", crate::fonts::semibold(t.font_badge), t.form_dim);
+    paint_text(
+        ui,
+        egui::Rect::from_min_max(egui::pos2(icon.right() + t.space_6, rect.top()), rect.max),
+        text,
+        egui::FontId::proportional(t.font_small),
+        t.form_dim,
+        false,
+    );
+}
+
 /// Read the enclosing row accessibility label. Tokens: `none`.
 pub(crate) fn label(ui: &Ui) -> &str {
     ui.stack().iter().find_map(|node| node.tags().get_downcast::<String>(LABEL)).map(String::as_str).unwrap_or("")
@@ -230,6 +261,15 @@ pub(crate) fn figure_rows(
 
 /// Memory belongs to the enclosing dialog ID; animation is avoided so each row keeps its fixed height.
 /// Persisted disclosure with a rule and uppercase title. Tokens: `control_height, space_2, radius_sm, hover, dialog_rule, form_section_icon_size, form_gap_y, font_caption, font_section_tracking, text_dim`.
+/// Static section caption for an Inspector group that stays expanded.
+#[cfg(test)]
+pub(crate) fn section_heading(ui: &mut Ui, title: &str) {
+    let t = Tokens::get();
+    let (rect, _) = ui.allocate_exact_size(vec2(dimension(ui.available_width()), t.space_16), egui::Sense::hover());
+    paint_text(ui, rect, &crate::i18n::tr_label(title).to_uppercase(), crate::fonts::semibold(t.font_caption), t.form_dim, true);
+    scenario::publish_rect(&format!("dialog:heading:{title}"), rect);
+}
+
 pub(crate) fn section<R>(ui: &mut Ui, id: impl egui::AsIdSalt, title: &str, default_open: bool, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
     section_count(ui, id, title, default_open, None::<usize>, add)
 }
@@ -243,6 +283,48 @@ pub(crate) fn section_count<R>(
     count: Option<impl std::fmt::Display>,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
+    section_with_badge(ui, id, title, default_open, (count.map(|count| count.to_string()), false, false), add)
+}
+
+/// Dense editor disclosure: 24 pt heading and 6 pt field gaps, with the same saved state and commands.
+pub(crate) fn editor_section<R>(ui: &mut Ui, id: impl egui::AsIdSalt, title: &str, default_open: bool, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+    section_with_badge(ui, id, title, default_open, (None, false, true), add)
+}
+
+/// Compact editor disclosure with a method badge. Unsupported content stays
+/// inspectable and disabled; its translated reason remains visible when folded.
+/// Uses the editor section's spacing, typography and semantic theme tokens.
+pub(crate) fn method_section<R>(
+    ui: &mut Ui,
+    id: impl egui::AsIdSalt,
+    title: &str,
+    method: &str,
+    reason: Option<&str>,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    let result =
+        section_with_badge(ui, id, title, false, (Some(method.to_owned()), false, true), |ui| ui.add_enabled_ui(reason.is_none(), add).inner);
+    if let Some(reason) = reason {
+        super::text(ui, reason, super::Text::Note("method_section_reason"));
+    }
+    result
+}
+
+/// A collapsed upcoming group with an inert disclosure and a trailing status chip.
+#[cfg(test)]
+pub(crate) fn pending_section(ui: &mut Ui, id: impl egui::AsIdSalt, title: &str, badge: &str) {
+    section_with_badge(ui, id, title, false, (Some(badge.to_owned()), true, true), |_| {});
+}
+
+fn section_with_badge<R>(
+    ui: &mut Ui,
+    id: impl egui::AsIdSalt,
+    title: &str,
+    default_open: bool,
+    badge: (Option<String>, bool, bool),
+    add: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    let (count, pending, compact) = badge;
     // A search still walks the body, so a setting inside a folded section can match, without
     // leaving the folded heading on screen for every query.
     if crate::prefs_search::querying(ui) && crate::prefs_search::suppress_chrome(ui) && !crate::prefs_search::texts_hit(ui, &[title]) {
@@ -252,8 +334,11 @@ pub(crate) fn section_count<R>(
     let t = Tokens::get();
     ui.add_space(t.space_2);
     let id = ui.make_persistent_id(id);
-    let mut open = searching || ui.ctx().data_mut(|data| data.get_persisted::<bool>(id)).unwrap_or(default_open);
-    let (rect, response) = ui.allocate_exact_size(vec2(dimension(ui.available_width()), row_height()), egui::Sense::click());
+    let mut open = !pending && (searching || ui.ctx().data_mut(|data| data.get_persisted::<bool>(id)).unwrap_or(default_open));
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(dimension(ui.available_width()), if compact { t.control_height - t.space_4 } else { row_height() }),
+        egui::Sense::click(),
+    );
     crate::prefs_search::follow(ui, title, rect);
     if response.hovered() || response.has_focus() {
         ui.painter().rect_filled(rect.shrink2(vec2(0.0, 1.0)), t.radius_sm, t.hover);
@@ -265,7 +350,7 @@ pub(crate) fn section_count<R>(
     super::disclosure(ui.painter(), icon_rect.center(), open, t.form_dim);
     let text_rect = egui::Rect::from_min_max(egui::pos2((icon_rect.right() + t.form_gap_y).min(rect.right()), rect.top()), rect.max);
     let caption = crate::i18n::tr_label(title).to_uppercase();
-    let badge_value = count.map(|count| count.to_string());
+    let badge_value = count;
     let badge_width = badge_value.as_ref().map_or(0.0, |value| label_width(ui, value) + t.space_12);
     let reserved = if badge_value.is_some() { badge_width + t.space_12 } else { 0.0 };
     let mut format = egui::TextFormat::simple(crate::fonts::semibold(t.font_caption), t.form_dim);
@@ -279,9 +364,11 @@ pub(crate) fn section_count<R>(
     let title_rect = egui::Rect::from_min_max(text_rect.min, egui::pos2(text_rect.left() + title_width, text_rect.bottom()));
     paint_text(ui, title_rect, &caption, crate::fonts::semibold(t.font_caption), t.form_dim, true);
     let mut rule_left = title_rect.right() + t.space_12;
+    let mut rule_right = rect.right();
     if let Some(value) = badge_value {
         let width = badge_width.min((rect.right() - rule_left).max(0.0));
-        let badge = egui::Rect::from_min_size(egui::pos2(rule_left.min(rect.right()), rect.center().y - t.space_10), vec2(width, t.space_10 * 2.0));
+        let left = if pending { rect.right() - width } else { rule_left.min(rect.right()) };
+        let badge = egui::Rect::from_min_size(egui::pos2(left, rect.center().y - t.space_10), vec2(width, t.space_10 * 2.0));
         ui.painter().rect_filled(badge, t.radius_xl, t.dialog_footer);
         ui.painter().with_clip_rect(ui.clip_rect().intersect(badge)).text(
             badge.center(),
@@ -291,21 +378,33 @@ pub(crate) fn section_count<R>(
             t.form_dim,
         );
         scenario::publish_rect(&format!("dialog:section:{title}:count"), badge);
-        rule_left = badge.right() + t.space_12;
+        if pending {
+            rule_right = badge.left() - t.space_12;
+        } else {
+            rule_left = badge.right() + t.space_12;
+        }
     }
-    if rule_left < rect.right() {
-        t.secondary_hline(ui.painter(), rule_left..=rect.right(), rect.center().y, t.dialog_rule);
+    if rule_left < rule_right {
+        t.secondary_hline(ui.painter(), rule_left..=rule_right, rect.center().y, t.dialog_rule);
     }
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, ui.is_enabled(), open, crate::i18n::tr_label(title)));
     scenario::publish_handle(&format!("dialog:section:{title}"), response.rect.center());
     scenario::publish_rect(&format!("dialog:section:{title}"), rect);
-    if response.clicked() && !searching {
+    if response.clicked() && !pending && !searching {
         open = !open;
     }
     if !searching {
         ui.ctx().data_mut(|data| data.insert_persisted(id, open));
     }
-    open.then(|| ui.push_id(id, add).inner)
+    open.then(|| {
+        ui.push_id(id, |ui| {
+            if compact {
+                ui.spacing_mut().item_spacing.y = t.space_6;
+            }
+            add(ui)
+        })
+        .inner
+    })
 }
 
 /// Shortcut matches during Preferences search. Closed until opened, and closed again when the
@@ -474,10 +573,12 @@ pub(crate) fn text(ui: &mut Ui, text: &str, style: Text<'_>) -> Response {
     let fixed = matches!(style, Text::Cell | Text::NameCell(_) | Text::MonoCell | Text::Value(_, _));
     let ink = match style {
         Text::Hint(_) | Text::Note(_) | Text::MonoNote(_) => t.form_dim,
+        Text::Inline if in_catalog(ui) => t.form_dim,
         Text::Report(_, true) | Text::Value(_, true) | Text::Error(_) => t.form_error,
         _ => t.form_ink,
     };
     let font = match style {
+        Text::Inline if in_catalog(ui) => crate::fonts::semibold(t.font_small),
         Text::NameCell(true) => crate::fonts::semibold(t.font_label),
         Text::NameCell(false) => crate::fonts::medium(t.font_label),
         Text::Heading(_) => crate::fonts::semibold(t.font_button),

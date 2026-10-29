@@ -27,6 +27,45 @@ fn three_point_arc_follows_its_snapped_through_point_after_dimension_change() {
     assert!(distance < 1e-6, "the arc misses its snapped through point by {distance} mm");
 }
 
+/// #6645: the centre-point arc runs the way the cursor went round the centre from the start.
+/// Round clockwise to the top it is three quarters through the bottom; counter-clockwise, as
+/// before, the quarter through the upper right. The start keeps its place and its name. With
+/// the preference off it is counter-clockwise whichever way the cursor went, as it always was.
+#[test]
+fn center_point_arc_runs_the_way_the_cursor_went_round() {
+    let clockwise = &[[7, -7, 0], [0, -10, 0], [-10, 0, 0], [-7, 7, 0]][..];
+    let quarter = Vec2::new(7.071_067_811_865_476, 7.071_067_811_865_476);
+    for (follow, path, reversed, through) in
+        [(true, clockwise, true, Vec2::new(0.0, -10.0)), (true, &[[7, 7, 0]][..], false, quarter), (false, clockwise, false, quarter)]
+    {
+        let mut h = crate::scenario::Harness::new();
+        assert!(h.app.preferences.center_arc_follows_cursor, "on by default");
+        h.app.preferences.center_arc_follows_cursor = follow;
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        h.settle();
+        h.step(&json!({"start":"sketch.arc.center_point"})).unwrap();
+        h.step(&json!({"click":{"world":[0, 0, 0]}})).unwrap();
+        h.step(&json!({"click":{"world":[10, 0, 0]}})).unwrap();
+        for point in path {
+            h.step(&json!({"move":{"world":point}})).unwrap();
+        }
+        h.step(&json!({"move":{"world":[0, 10, 0]}})).unwrap();
+        let sweep = h.app.tool.as_ref().and_then(|t| t.hover.as_ref().map(|p| crate::tools::center_arc_sweep(t, p.0))).unwrap();
+        let expected = if reversed { -270.0 } else { 90.0 };
+        assert!((sweep.to_degrees() - expected).abs() < 1e-6, "previewed sweep {}°", sweep.to_degrees());
+        h.step(&json!({"click":{"world":[0, 10, 0]}})).unwrap();
+        let sid = h.app.session.active_sketch.unwrap();
+        let sk = h.app.session.model.state().sketch(sid).unwrap().sketch.clone();
+        let arc = sk.curves.iter().position(|c| matches!(c.kind, CurveKind::Arc { .. })).unwrap();
+        assert_eq!(sk.curves[arc].reversed, reversed, "{:?}", h.app.status);
+        let id = sk.curves[arc].id.clone();
+        let start = sk.point(sk.resolve_point(&format!("{id}.start")).unwrap()).unwrap();
+        assert!(start.dist(Vec2::new(10.0, 0.0)) < 1e-6, "{start:?}");
+        let off = sk.shape(arc).unwrap().dist(through);
+        assert!(off < 1e-6, "the arc misses {through:?} by {off} mm");
+    }
+}
+
 #[test]
 fn clicked_periodic_fit_closes_at_start_and_right_click_keeps_natural() {
     let mut h = crate::scenario::Harness::new();
@@ -653,10 +692,10 @@ fn trim_hover_shows_the_piece_a_click_takes_away() {
 }
 
 /// #3141: the 2-tangent circle tool, clicked on two sides of a rectangle drawn away from the
-/// origin, puts its circle in the corner between the clicks without moving the rectangle, and
-/// fixed sides no longer make it fail.
+/// origin, offers its default radius before it puts the circle in the corner between the clicks.
+/// A typed radius reaches the command, neither path moves the rectangle, and fixed sides work.
 #[test]
-fn two_tangent_circle_clicked_on_two_sides_fits_the_corner_and_moves_nothing() {
+fn two_tangent_circle_takes_its_default_or_a_typed_radius_and_moves_nothing() {
     for fixed in [false, true] {
         let mut h = crate::scenario::Harness::new();
         h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
@@ -673,10 +712,25 @@ fn two_tangent_circle_clicked_on_two_sides_fits_the_corner_and_moves_nothing() {
         h.step(&json!({"start":"sketch.circle.two_tangent"})).unwrap();
         h.step(&json!({"click":{"world":[-550,0,0]}})).unwrap();
         h.step(&json!({"click":{"world":[-800,250,0]}})).unwrap();
+        let before_circle = h.app.session.model.state().sketch(sid).unwrap().sketch.clone();
+        assert!(!before_circle.curves.iter().any(|c| matches!(c.kind, CurveKind::Circle { .. })), "the second pick waits for Radius");
+        let tool = h.app.tool.as_ref().unwrap();
+        assert_eq!(tool.dims.iter().map(|dimension| dimension.label).collect::<Vec<_>>(), ["Radius"]);
+        let offered = tool.dims[0].value.parse::<f64>().unwrap_or_default();
+        assert!((offered - 50.0).abs() < 1e-6, "the shorter 500 mm side offers 50 mm: {offered}");
+        let radius = if fixed {
+            h.step(&json!({"key":"A","cmd":true})).unwrap();
+            h.step(&json!({"text":"30"})).unwrap();
+            30.0
+        } else {
+            50.0
+        };
+        h.step(&json!({"key":"Enter"})).unwrap();
         let sk = h.app.session.model.state().sketch(sid).unwrap().sketch.clone();
         let circle = sk.curves.iter().position(|c| matches!(c.kind, CurveKind::Circle { .. }));
         let circle = circle.unwrap_or_else(|| panic!("fixed {fixed}: no circle: {:?}", h.app.status));
-        assert!(sk.center(circle).unwrap().dist(Vec2::new(-750.0, 50.0)) < 1e-6, "fixed {fixed}: {:?}", sk.center(circle));
+        assert!(sk.center(circle).unwrap().dist(Vec2::new(-800.0 + radius, radius)) < 1e-6, "fixed {fixed}: {:?}", sk.center(circle));
+        assert!((sk.radius(circle).unwrap() - radius).abs() < 1e-6, "fixed {fixed}: {:?}", sk.radius(circle));
         let after = points(&h);
         assert!(before.iter().zip(&after).all(|(a, b)| a.dist(*b) < 1e-9), "fixed {fixed}: the rectangle moved: {after:?}");
     }
