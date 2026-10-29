@@ -184,20 +184,19 @@ fn split_handle(app: &mut SolveApp, ui: &egui::Ui, available: Rect) {
         return;
     }
     let rail = Rect::from_x_y_ranges(browser.x_range(), browser.bottom() - SPLIT_RAIL / 2.0..=history.top() + SPLIT_RAIL / 2.0);
-    Container::new(ui.ctx(), Surface::Canvas).area(egui::Id::new("sc_column_split")).order(egui::Order::Foreground).fixed_pos(rail.min).show(
-        ui.ctx(),
-        |ui| {
-            ui.set_min_size(rail.size());
-            let response = ui.interact(rail, egui::Id::new("sc_column_split_rail"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeVertical);
-            if response.dragged() {
-                let delta = ui.input(|input| input.pointer.delta().y);
-                if delta.is_finite() {
-                    let header = header_outer_height().min(budget / 2.0);
-                    app.preferences.browser_share = browser_split((browser.height() + delta) / budget, budget, header) / budget;
-                }
+    let overlay = Container::new(ui.ctx(), Surface::Panel).area(egui::Id::new("sc_column_split")).fixed_pos(rail.min);
+    ui.ctx().set_sublayer(ui.layer_id(), overlay.layer());
+    overlay.show(ui.ctx(), |ui| {
+        ui.set_min_size(rail.size());
+        let response = ui.interact(rail, egui::Id::new("sc_column_split_rail"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeVertical);
+        if response.dragged() {
+            let delta = ui.input(|input| input.pointer.delta().y);
+            if delta.is_finite() {
+                let header = header_outer_height().min(budget / 2.0);
+                app.preferences.browser_share = browser_split((browser.height() + delta) / budget, budget, header) / budget;
             }
-        },
-    );
+        }
+    });
     crate::scenario::publish_handle("left-column-split", rail.center());
 }
 
@@ -241,27 +240,23 @@ pub fn left_panel(app: &mut SolveApp, ui: &mut egui::Ui) {
         let fill = card_fill(app, container.floating());
         let frame = container.frame(ui.ctx(), fill, crate::frame::Side::Left).inner_margin(t.space_4);
         let inner = (bounds.size() - frame.total_margin().sum()).max(egui::Vec2::ZERO);
-        let card = Container::new(ui.ctx(), Surface::Panel)
-            .area(egui::Id::new("sc_timeline_left_card"))
-            .fixed_pos(bounds.min)
-            .order(egui::Order::Middle)
-            .show(ui.ctx(), |ui| {
-                let response = container.show_frame(ui, frame, available, |ui| {
-                    ui.set_min_size(inner);
-                    ui.set_max_size(inner);
-                    ui.set_clip_rect(ui.clip_rect().intersect(Rect::from_min_size(ui.max_rect().min, inner)));
-                    left_timeline(app, ui);
-                });
-                if stacked(app) {
-                    let width = crate::browser::browser_width(app.preferences.browser_width);
-                    crate::browser::resize_column(app, ui, response.response.rect, width, "left-history-rail");
-                    split_handle(app, ui, available);
-                }
+        let card = Container::new(ui.ctx(), Surface::Panel).area(egui::Id::new("sc_timeline_left_card")).fixed_pos(bounds.min).show(ui.ctx(), |ui| {
+            let response = container.show_frame(ui, frame, available, |ui| {
+                ui.set_min_size(inner);
+                ui.set_max_size(inner);
+                ui.set_clip_rect(ui.clip_rect().intersect(Rect::from_min_size(ui.max_rect().min, inner)));
+                left_timeline(app, ui);
             });
+            if stacked(app) {
+                let width = crate::browser::browser_width(app.preferences.browser_width);
+                crate::browser::resize_column(app, ui, response.response.rect, width, "left-history-rail");
+                split_handle(app, ui, available);
+            }
+        });
         app.shell.history = Some(card.response.rect);
         crate::scenario::publish_rect("history:vertical", card.response.rect);
         if !stacked(app) {
-            seam_handle(app, ui, card.response.rect);
+            seam_handle(app, ui, card.response.rect, card.response.layer_id);
         }
     } else {
         let width = strip_width(app).min(ui.available_width().max(0.0));
@@ -282,7 +277,7 @@ pub fn left_panel(app: &mut SolveApp, ui: &mut egui::Ui) {
         app.shell.history = Some(response.response.rect);
         if !held {
             crate::scenario::publish_rect("history:vertical", response.response.rect);
-            seam_handle(app, ui, response.response.rect);
+            seam_handle(app, ui, response.response.rect, response.response.layer_id);
         }
     }
 }
@@ -292,29 +287,29 @@ fn names_fit(width: f32) -> bool {
     width >= crate::ui_kit::history_width(true) - (t.space_8 + t.space_2)
 }
 
-fn seam_handle(app: &mut SolveApp, ui: &mut egui::Ui, card: Rect) {
+fn seam_handle(app: &mut SolveApp, ui: &mut egui::Ui, card: Rect, parent: egui::LayerId) {
     let seam = crate::ui_kit::HistorySeam::new(card);
     let bounds = seam.edge.union(seam.pill);
-    Container::new(ui.ctx(), Surface::Canvas).area(egui::Id::new("history_seam_overlay")).order(egui::Order::Foreground).fixed_pos(bounds.min).show(
-        ui.ctx(),
-        |ui| {
-            ui.set_min_size(bounds.size());
-            ui.set_clip_rect(ui.ctx().content_rect());
-            let result = crate::ui_kit::history_seam(ui, card, card.width() >= crate::ui_kit::history_width(true));
-            if let Some(width) = result.width {
-                app.shell.history_drag_width = Some(width);
-                ui.ctx().request_repaint();
-                if result.released {
-                    let _ = app.run("view.history_layout", json!({"width": width}));
-                    app.shell.history_drag_width = None;
-                }
-            } else if result.toggle {
-                let width = crate::ui_kit::history_width(card.width() < crate::ui_kit::history_width(true));
-                let _ = app.run("view.history_layout", json!({"width":width}));
-                ui.ctx().request_repaint();
+    let overlay = Container::new(ui.ctx(), Surface::Panel).area(egui::Id::new("history_seam_overlay")).fixed_pos(bounds.min);
+    // The grip follows its panel when clicked, while remaining below movable dialogs.
+    ui.ctx().set_sublayer(parent, overlay.layer());
+    overlay.show(ui.ctx(), |ui| {
+        ui.set_min_size(bounds.size());
+        ui.set_clip_rect(ui.ctx().content_rect());
+        let result = crate::ui_kit::history_seam(ui, card, card.width() >= crate::ui_kit::history_width(true));
+        if let Some(width) = result.width {
+            app.shell.history_drag_width = Some(width);
+            ui.ctx().request_repaint();
+            if result.released {
+                let _ = app.run("view.history_layout", json!({"width": width}));
+                app.shell.history_drag_width = None;
             }
-        },
-    );
+        } else if result.toggle {
+            let width = crate::ui_kit::history_width(card.width() < crate::ui_kit::history_width(true));
+            let _ = app.run("view.history_layout", json!({"width":width}));
+            ui.ctx().request_repaint();
+        }
+    });
 }
 
 /// Width alone chooses icons, names, horizontal transport and the optional title.
@@ -1101,6 +1096,8 @@ struct Rows<'a> {
     drag: Option<Drag>,
     hovered: Option<u64>,
     edit: Option<u64>,
+    /// Each sketch's solve state, read once for the column (#7245).
+    sketch_states: crate::sketch_state::SketchStates,
 }
 
 fn vertical_features(app: &mut SolveApp, ui: &mut egui::Ui, names: bool) {
@@ -1142,6 +1139,7 @@ fn vertical_features(app: &mut SolveApp, ui: &mut egui::Ui, names: bool) {
     let from_view = [crate::timeline::hovered_feature(app), crate::timeline::picked_feature(app)];
     let drag_id = ui.id().with("tl_vertical_drag");
     let mut rows = Rows {
+        sketch_states: crate::sketch_state::SketchStates::of(app),
         names,
         under_feature,
         features: &features,
@@ -1332,6 +1330,7 @@ fn feature_row(app: &mut SolveApp, ui: &mut egui::Ui, rows: &mut Rows, index: us
     let listed =
         (row_kind == RowKind::Own).then(|| plan.row_at(index)).flatten().map(|row| row.listed.as_slice()).filter(|listed| !listed.is_empty());
     let has_patterns = !reference && matches!(kind, TimelineKind::Sketch) && crate::sketch_pattern_tree::has_patterns(app, id);
+    let sketch_state = matches!(kind, TimelineKind::Sketch).then(|| rows.sketch_states.get(id)).flatten();
     // One fold per row: a feature's listed sketches, or a sketch's patterns.
     let fold = match listed {
         Some(_) => Some((sketches_key(id), false)),
@@ -1388,6 +1387,7 @@ fn feature_row(app: &mut SolveApp, ui: &mut egui::Ui, rows: &mut Rows, index: us
         error: error.is_some(),
         warning: warning.is_some(),
         reference,
+        ink: sketch_state.and_then(|state| state.ink(&t)),
         accent: crate::theme::TabAccent::for_tab(&t, if dragged { "SKETCH" } else { &app.ui.tab }),
     }
     .paint(ui.painter(), chip, style);
@@ -1422,6 +1422,9 @@ fn feature_row(app: &mut SolveApp, ui: &mut egui::Ui, rows: &mut Rows, index: us
         if error.is_some() || warning.is_some() {
             tip.push_str(&format!("\n{}", crate::timeline::status_text(name, ty, error.as_deref(), warning.as_deref())));
         }
+        if let Some(state) = sketch_state {
+            tip.push_str(&format!("\n{}", state.text()));
+        }
         crate::ui_kit::text(ui, &tip, crate::ui_kit::Text::Value("history", false));
         // A value row is one line: where the sketch is listed gets a row of its own.
         if let Some(host) = listed_under.filter(|_| reference) {
@@ -1449,6 +1452,7 @@ fn feature_row(app: &mut SolveApp, ui: &mut egui::Ui, rows: &mut Rows, index: us
             edit = true;
             ui.close();
         }
+        crate::timeline::sketch_plane_button(app, ui, id);
         if let Some(sketch) = sketch
             && crate::context_menu::button(ui, "Edit Profile Sketch", "sketch").clicked()
         {

@@ -26,21 +26,53 @@ applies or saves settings or starts an image job. It focuses the existing Inspec
 page, while every Inspector page and registered Render command remains reachable.
 The headless command validates and echoes the request without changing the document.
 
-Render, Cancel and the shared command search (S) occupy the top row. The former Pick
-HUD, icon-text Body/Face/Component segments, Paint/Pick Up actions and direct-light
-preview information chip occupy Look's second row with 8 pt side padding. Picking and changing the
-light coordinate frame remain disabled with their reason in this checkout. Frame
-uses the existing explicit camera command for projection; Output shows the current
+Render, Cancel and the shared command search (S) occupy the top row. The Pick control's
+icon-text Body/Face/Component segments, Paint/Pick Up actions and direct-light
+preview information chip occupy Look's second row with 8 pt side padding. Changing the
+light coordinate frame remains disabled with its reason in this checkout. Frame
+uses the existing explicit camera command for projection and the registered Save Shot
+action opens the shared naming confirmation; Output shows the current
 size/format and directs edits to the Output Inspector. No completion ticks are inferred.
 
-The Browser and Inspector float in both shell layouts, share top and bottom edges,
-and clear the bar and Shots strip by 8 pt. Their default outer widths are 266 pt and 305 pt, with the shared resize bounds.
-The 48 pt Shots strip has an 8 pt gap from the docks. The 110 pt compass uses the
-free canvas beside the Inspector and the navigation bar keeps its shared navigation handler. Narrow
-rows scroll horizontally; docks shrink together or disappear if no usable space
-remains. The Shots strip's independent `view.shots_strip` preference is unchanged.
-The current model/library Browser can reveal model bodies for Look; scene-specific
-Lights, Shots and Output expansion awaits the scene Browser change.
+The Browser and Inspector float in both shell layouts and share a top edge, 8 pt
+below the bar. Their default outer widths are 266 pt and 305 pt, with shared resize
+bounds. The Browser keeps the upper left card (up to ten compact scene rows); its
+stage panel fills the remaining height below it, ending 8 pt above the 48 pt Shots
+strip. Both cards share width and side preferences. Narrow windows shorten the
+Browser to reserve library space, then omit cards that cannot fit safely.
+
+Look hosts Appearances: search with the actual catalog count, In Design / Library /
+Recent / favorites scopes, horizontally scrolling category chips and a three-column
+sphere grid or list. Resources used in the design or matching a selected look's
+finish family or category appear first. Clicking a look applies through
+`appearance.assign` to selected bodies, faces or components; with no target it
+only inspects. Favorites and recent history live in user preferences. Explicit
+catalog navigation from the Inspector retains the read-only resource browser.
+
+Light hosts the existing native studios and HDR environments in the same tile grid.
+A click runs `render.preset.apply` or `render.library.environment.apply`, preserving
+those commands' validation and undo behavior. Studios require an explicitly selected
+GPU path setup; environments require CPU or GPU ray tracing. Frame shows a faded
+Frame presets placeholder with its Shot editor reason. Output hosts the Size presets
+card described below. Stage navigation itself never applies a resource.
+
+The 110 pt compass uses the free canvas beside the Inspector; the navigation bar
+keeps its shared handler. The Shots strip's independent `view.shots_strip`
+preference is unchanged.
+
+`view.render_focus {on: true}` hides the Browser, Inspector and Shots strip and
+releases their canvas reservations. Tab toggles focus while Render is active and
+no text field has focus; the **Exit focus** chip sits at the Browser's remembered
+side below the stage bar. The workspace card, stage bar, compass and view bar
+remain available. Focus belongs to the window, is never saved in a design or
+preferences, and retains the docks' sides, widths and folded state.
+
+Below 1100 pt, or with `view.layout {mode: compact}`, the docks use their shared
+minimum width without overwriting the remembered width. Below 800 pt the Browser
+folds into a chip. Its floating card opens through
+`view.render_browser {open: true}` and closes through **Fold Browser**; it shields
+navigation beneath the card without reserving a canvas column. Neither command
+edits or evaluates the design, moves the camera or creates an undo step.
 
 ## Image methods and controls
 
@@ -98,38 +130,52 @@ half-edge vectors specify their geometry in millimetres; radiance is linear RGB.
 An environment map replaces the constant environment term. The path integrator uses
 the published emitter/BSDF MIS contract.
 
-### GPU image materials
+### Appearance editor and body optics
 
-The GPU image materials section assigns runtime optics to whole visible scene bodies.
-Refresh the authoritative body list, explicitly choose a body, and add its assignment.
-The captured ordinal and exact name must match; a document identity or revision change
-requires explicit revalidation. A removed, renamed or reordered body cannot silently
-receive another body's settings. The editor uses weak document identity references, so
-stale assignments do not retain historical documents. The normal Appearance and material
-library dialogs keep their existing behavior.
+Picking a face, body or component opens Appearance. Its kind chips, look card and
+Applies to scope lead to Edit: colour, finish, metallic, roughness, opacity and IOR.
+The look card's source tag opens the inheritance chain. Reset restores the picked
+target's values from when it was opened; Save to library uses the existing design
+library export flow.
 
-Glass, clear coat and planar maps have separate collapsible controls. Six original glass
-recipes come directly from the starter pack: linear transmittance over the recipe's
-reference distance becomes absorption per millimetre via `-ln(T) / distance`. Selecting
-one never changes saved opacity or assigns a scalar appearance. The swatch shows the
-recipe's transmittance, not a rendered preview. Manual IOR, RGB absorption, thin-sheet
-thickness and straight-shadow transmission are available. Closed solids derive optical
-distance from geometry; full topology, orientation, overlap and optical-boundary checks
-run during GPU preparation. Successful Check does not certify those geometric properties.
+Glass and absorption (GPU), Clear coat (GPU), Maps (GPU), Saved with this shot,
+and Reflections (CPU) follow in that order and start collapsed. Unsupported
+methods remain visible with an explanation; opening a section never changes the
+renderer. Optical bindings currently target one whole visible body, so face,
+component and multiple-body picks show the same controls disabled with a reason.
+The Browser command has no Wear selection kind yet, so no Open Wear link is shown.
 
-Clear coat exposes weight, roughness and IOR over the existing opaque base. Runtime maps
-accept bounded local PNG/JPEG base-color sRGB and OpenGL +Y normal images, normal strength,
-and orthogonal world-space origin/U/V vectors in millimetres. Each vector spans one full
-repeat. The backend's 1024×1024 per-map, 16 MiB encoded-total and 128-repeat bounds remain.
-Glass cannot share one body with coat or maps. Limits are eight glass bodies, 64 coat
-bodies and 16 mapped bodies, within a maximum of 64 editor assignments.
+The old Appearance page retains explicit target selection and the library/reference
+and wear controls awaiting their own editors. Its body optics use the same sections
+as the picked-body editor. Scene ordinal, exact name, stable target and document
+identity are checked; a document revision change requires Revalidate this body.
 
-All these controls are temporary per-document-tab state, explicitly labelled in the UI.
-They are not saved in the design, render setup or portable material library. Disable the
-overrides before choosing a CPU method; active GPU assignments cause Check/Start to
-refuse a CPU request. Both buttons submit the same freshly validated runtime parameters,
-and file contents are captured by the engine at that boundary. File-picker completion
-checks the original document, revision and body identity before accepting the path.
+Six original glass recipes use linear transmittance over a reference distance to
+compute absorption per millimetre via -ln(T) / distance. Glass exposes boundary,
+IOR, thickness, RGB absorption, straight shadow transmission and closed-solid
+interior scattering. Thickness is disabled for closed glass, which uses geometric
+distance. Glass cannot share a body with coat or maps. Full topology, orientation,
+overlap and optical-boundary checks run during GPU preparation; Check does not
+certify those properties.
+
+Clear coat retains weight, roughness and IOR. Maps retain the bounded PNG/JPEG
+picker flow for base colour, normal, metallic and roughness images, world-space
+origin and U/V repeat vectors, normal strength, V orientation and base replacement.
+The backend's map-size, encoded-byte, repeat and assignment limits still apply.
+File-picker completion checks the original document, revision and body identity.
+
+These local overrides are temporary on the document tab. Save these optics uses
+render.optics.bind to save physical glass with the shot; replacement requires the
+explicit Replace this body's saved optics checkbox. Coat and local image maps
+remain temporary, and the save action explains that limit. Remove saved opens the
+shared Remove saved optics? confirmation before render.optics.unbind; stale
+confirmations cannot affect a changed document. Saved authored surface bindings
+remain manageable in Saved with this shot. Reflections retains this body's
+Off/Mirror/Rough CPU binding and explicit target confirmation.
+
+Active GPU overrides still cause Check/Start to refuse a CPU request. Both buttons
+submit the same freshly validated runtime parameters and the engine captures file
+contents at that boundary.
 
 Check and Start build the same request from the current product camera, size and
 selected method, including when Render Result is open. Every click revalidates host
@@ -148,9 +194,8 @@ resolved sRGB colours, opacity and face appearance overrides. Face indices are t
 existing mesh-to-B-rep mapping, resolved through document appearance references;
 they are not new persistent names or triangle-derived face identities.
 
-There are no grid/axis/edge lines, sketches, construction objects, selection or hover
-colours, section cuts, analysis shading, active-component fading, canvases or decals
-in this initial product policy. Browser visibility still controls which bodies appear.
+There are no grid/axis/edge lines, sketches, construction objects, section cuts,
+analysis shading, active-component fading, canvases or decals in the product scene. Browser visibility still controls which bodies appear.
 The existing Design viewport and CPU snapshot routes keep their current policies.
 
 Extraction refuses a stale live-drag model. The explicit model-reading `render.scene {}`
@@ -237,7 +282,7 @@ distance, yaw, pitch, roll, FOV and up axis as view state. It neither edits the 
 nor settles a stale model. The UI honours its up axis in Render; the Design camera
 is restored when returning. The camera moves exactly as in Design: the navigation preset,
 Orbit around, zoom to the cursor, the SpaceMouse, the middle double-click, F6 and the axis
-view or navigation cube all work (nothing is picked or selected here), and
+view or navigation cube all work and
 **Fit Product** frames visible product bodies without including sketches or selection.
 
 Preview drafts do not make the document dirty until saved. Unknown backend preferences
@@ -329,3 +374,76 @@ locale before falling back to English. Adding an untranslated Render alias no
 longer hides existing Library, Appearance or Checkpoint translations. Contextual
 Render labels still use their own stable IDs rather than borrowing a different
 feature's meaning.
+
+## Picking in the product view
+
+The Look stage bar's second-row **Pick** control selects Body, Face or Component granularity,
+using Design’s selection filter state through the `select.filter` command. Component
+picks use the Browser’s exact occurrence path, including nested and repeated
+placements; a body at the design root retains its body identity. Face picks use the
+existing mesh-to-B-rep mapping and connected-surface selection rules.
+
+Hover highlights the target; clicking selects it. Clicking empty space clears the
+selection. Shift and Ctrl/Cmd follow Design’s add/toggle behavior and the Shift
+add-only preference. Browser row selections and product picks share the same
+selection commands and state, retained across Design/Render switches. Picking works
+with the Shots strip shown or hidden. Render picking never starts a geometry edit.
+
+Selection and hover use Design’s highlight drawing and theme tokens in a separate
+GPU overlay on the live product view. The product scene and its upload stay unchanged.
+CPU image jobs, exported PNGs, retained images and the Render Result canvas never
+contain this overlay; the Pick control is disabled on the result canvas.
+
+## Browser scene focus
+
+The shared Browser lists Environment (with its source), Lights, saved Shots,
+Objects and Output (with image dimensions and format). Shots **+** opens the
+existing Shots manager; Lights **+**, Solo and Mute remain faded with an explicit
+reason until named light commands exist. Existing light entries describe the
+current numerical image setup, without inventing a saved rig.
+
+`ViewState.selection` exposes `RenderSelection` for Nothing, Object (the existing
+engine selection), Environment, Light, Shot and Output. It belongs to each document
+view and is never saved in a design. `view.render_select` validates semantic focus
+requests without opening dialogs or editing/evaluating a design. Object picks and
+Browser selections keep the existing selection commands. Selecting Output opens the Output editor. Other focus types retain their existing
+Inspector routing for subsequent selection-following editor changes.
+
+Look expands Objects, Light expands Lights and Environment, and Frame expands
+Shots. Output leaves expansion unchanged. Stages preserve selection and never
+lock rows or prevent manual expansion.
+
+## Appearance editor
+
+Look shows one Appearance editor with scope, current look, the four-step look
+chain and Edit controls. There is no Inspector page strip. Applies to chooses the
+selected target or every exact user of the look; mixed values remain inert until
+edited. Edit contains colour/hex, finish and metallic/roughness/opacity sliders.
+Advanced reuses the existing surface library, optical bindings, glass, clear coat,
+texture-map, reflection and aging controls. The separate Textures disclosure is
+marked Soon. The shared footer exports the design library through `library.export`
+and resets the current target's override through `appearance.assign`.
+`view.render_inspector {visible}` controls transient per-document visibility;
+selecting a stage reopens the editor. Output selection routes to its dedicated editor;
+other semantic selection focus routing remains deferred.
+
+## Output editor
+
+The Output stage offers size, format, quality and a Check summary in the stage bar's
+second row. Its lower-left Size presets card offers Preview (1280 × 720), Full HD,
+4K, Square and Custom. Presets outside the selected executor's limits stay visible
+with a disabled explanation. Custom retains the current size and reveals its fields.
+Numerical size edits and presets use `render.output.size`; they never save a shot
+or start a job.
+
+Selecting Output in the Browser shows one editor with Image, Effects and Check
+sections, without page navigation or pinned job actions. Image retains size/aspect,
+format, sampling, method, transparency and export destination controls. Effects owns
+tone, bloom, grading and regrade. Check retains the preflight list, freshness checks,
+installed backend/status metadata and expandable diagnostics. Named quality presets
+and EXR settings remain unavailable with their existing reasons. Destination selection
+uses the existing completed-image export picker.
+
+Render and Cancel stay in the stage bar. Active jobs also show a single-row progress
+pill with Cancel. The result viewer retains Copy, export, close, Fit/100% and shared
+pan/zoom. R starts the active setup; Escape closes the image without cancelling its job.

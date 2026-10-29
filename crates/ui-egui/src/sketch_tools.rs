@@ -623,6 +623,7 @@ pub fn tool_for(id: &str) -> Option<Tool> {
         dim_history: Vec::new(),
         dims_stage: usize::MAX,
         dims_focus: false,
+        arc_turn: 0.0,
     })
 }
 
@@ -657,7 +658,7 @@ pub fn hint(id: &str) -> Option<String> {
             "sketch.edit_text" => "Edit Text: click a letter interior or outline",
             "sketch.blend_curve" => "Blend curve: click the ends of two curves",
             "sketch.constraint.curvature" => "Curvature: click two curves that share an end",
-            "sketch.circle.two_tangent" => "2-tangent circle: click two curves (the circle goes between the two clicks)",
+            "sketch.circle.two_tangent" => "2-tangent circle: click two curves, then enter the radius (the circle goes between the two clicks)",
             "sketch.circle.three_tangent" => "3-tangent circle: click three curves",
             "sketch.constrainer" => "Constrain: click one or two entities; right-click to apply",
             "sketch.constraint.polygon" => "Polygon: click the lines of a closed chain; right-click to apply",
@@ -779,6 +780,14 @@ fn round_nice(x: f64) -> f64 {
     n * p
 }
 
+/// The radius offered after the two curves of a tangent circle have been picked.
+pub(crate) fn two_tangent_default_radius(app: &SolveApp, tool: &Tool) -> f64 {
+    match tool.picks.as_slice() {
+        [a, b] => round_nice(curve_len(app, a).min(curve_len(app, b)) * 0.1),
+        _ => 1.0,
+    }
+}
+
 /// A click with an extra tool.
 pub fn periodic_start_snap(app: &SolveApp, tool: &Tool, proj: &Proj, pos: Pos2) -> Option<Vec2> {
     if tool.cmd != "sketch.spline.fit_point" || tool.pts.len() < 3 || crate::drag_snap::suppressed() {
@@ -868,7 +877,15 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
             let (_, ray) = proj.ray(pos);
             let seen = |name: &str| crate::dialogs::plane_by_name(&app.session, name).is_some_and(|pl| pl.normal().dot(ray).abs() > 0.2 * ray.len());
             let target = hits.iter().find_map(|h| match h {
-                Hit::Face { point, .. } => Some((json!({"face": [point.x, point.y, point.z]}), *point)),
+                // The picked body and face, as Create Sketch sends them: a point alone makes the
+                // engine search every face of every body, which gives up on a large design.
+                Hit::Face { body, index, point } => {
+                    let face = solidcraft_engine::Sel::Face { body: body.clone(), index: *index, point: *point };
+                    Some((
+                        crate::sketch_attachment_ui::face_plane(app, &face).unwrap_or_else(|| json!({"face": [point.x, point.y, point.z]})),
+                        *point,
+                    ))
+                }
                 Hit::Plane { name, point } if !decal && seen(name) => Some((json!(name), *point)),
                 _ => None,
             });
@@ -886,7 +903,7 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
             });
             let Some((plane, at)) = target else { return };
             let p = if decal {
-                json!({"path": path, "face": plane.get("face").cloned().unwrap_or(Value::Null)})
+                json!({"path": path, "face": if plane.get("face").is_some() { plane } else { Value::Null }})
             } else {
                 json!({"path": path, "plane": plane, "at": [at.x, at.y, at.z]})
             };
@@ -962,13 +979,19 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
                 let _ = app.run(cmd, json!({"curves": [id]}));
                 return;
             }
+            // Once both tangent curves are picked, the Radius box owns the interaction until
+            // Enter commits it or Escape cancels it. A click behind the box must not replace or
+            // append another curve.
+            if cmd == "sketch.circle.two_tangent" && tool.picks.len() >= 2 {
+                return;
+            }
             if !tool.picks.contains(&id) {
                 tool.picks.push(id);
                 if let Some((p, _)) = at {
                     tool.pts.push((p, None));
                 }
             }
-            if n > 0 && tool.picks.len() >= n {
+            if n > 0 && tool.picks.len() >= n && cmd != "sketch.circle.two_tangent" {
                 run_entities(app, tool);
                 tool.picks.clear();
                 tool.pts.clear();
@@ -1015,10 +1038,22 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
     }
 }
 
-/// Put down the next point of a point tool: a click, or Enter in one of its value boxes. The
-/// last point runs the command. Typed values are checked first, so a rejected one stays in its
-/// box to be corrected rather than reaching the command.
+/// Put down the next point of a point tool, or confirm an extra tool's value box with Enter.
+/// Typed values are checked first, so a rejected one stays in its box to be corrected rather
+/// than reaching the command.
 pub(crate) fn place_point(app: &mut SolveApp, tool: &mut Tool, p: (Vec2, Option<String>)) {
+    if tool.cmd == "sketch.circle.two_tangent" && tool.picks.len() == 2 {
+        if let Err(error) = crate::sketch_dims::validate(app, tool) {
+            app.set_status(error, true);
+            return;
+        }
+        if run_entities(app, tool) {
+            tool.picks.clear();
+            tool.pts.clear();
+            crate::sketch_dims::reset(tool);
+        }
+        return;
+    }
     let Some(Mode::Points(n)) = mode(tool.cmd) else { return };
     if let Err(error) = crate::sketch_dims::validate(app, tool) {
         app.set_status(error, true);
@@ -1073,12 +1108,13 @@ fn run_points(app: &mut SolveApp, t: &Tool) -> bool {
     crate::tools::draw(app, t, params).is_ok()
 }
 
-fn run_entities(app: &mut SolveApp, t: &Tool) {
+fn run_entities(app: &mut SolveApp, t: &Tool) -> bool {
     let k = &t.picks;
     let params = match t.cmd {
         "sketch.constraint.curvature" => json!({"a": k[0], "b": k[1]}),
         "sketch.circle.two_tangent" => {
-            let r = round_nice(curve_len(app, &k[0]).min(curve_len(app, &k[1])) * 0.1);
+            let r = crate::sketch_dims::locked_expression(t, "Radius")
+                .map_or_else(|| json!(two_tangent_default_radius(app, t)), |expression| json!(expression));
             // Between the two clicks: each lies on its curve, so the circle in the corner they
             // span is the one nearest their midpoint (#3141).
             let near = xy(t.pts.iter().fold(Vec2::ZERO, |a, p| a + p.0) / t.pts.len().max(1) as f64);
@@ -1091,9 +1127,9 @@ fn run_entities(app: &mut SolveApp, t: &Tool) {
         }
         "sketch.constrainer" => json!({"entities": k}),
         "sketch.constraint.polygon" => json!({"lines": k}),
-        _ => return,
+        _ => return false,
     };
-    let _ = app.run(t.cmd, params);
+    app.run(t.cmd, params).is_ok()
 }
 
 /// Right-click with an extra tool: finish a chain or move to the next stage. Returns false

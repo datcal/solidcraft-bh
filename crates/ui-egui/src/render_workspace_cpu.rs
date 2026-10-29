@@ -127,7 +127,9 @@ pub(super) enum Environment {
 
 #[derive(Clone, Debug)]
 pub(super) struct View {
+    #[cfg(test)]
     pub selected_body: Option<String>,
+    #[cfg(test)]
     pub body_filter: String,
     pub environment: Environment,
     pub hdr: hdr::Input,
@@ -164,7 +166,9 @@ pub(super) struct Checked {
 impl Default for View {
     fn default() -> Self {
         Self {
+            #[cfg(test)]
             selected_body: None,
+            #[cfg(test)]
             body_filter: String::new(),
             environment: Environment::None,
             hdr: hdr::Input::default(),
@@ -288,7 +292,7 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     let view = &app.render_workspace.view.cpu;
     let mut options = base.clone();
     if options.area_samples.is_some_and(|n| !matches!(n, 1 | 4 | 16 | 64)) {
-        return Err("area_samples must be 1, 4, 16 or 64".into());
+        return Err(crate::i18n::tr("render.error_area_samples").into());
     }
     if options.area_lights.as_ref().is_none_or(Vec::is_empty) {
         options.area_samples = None;
@@ -322,6 +326,7 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     for (id, key, section) in [
         ("render_cpu_reflections", "render.cpu_reflections", 0),
@@ -338,6 +343,7 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.small(app.tr("render.cpu_runtime_help"));
 }
 
+#[cfg(test)]
 pub(super) fn reflection_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.small(app.tr("render.cpu_reflection_help"));
     let entries = app.render_workspace.view.raytrace.reflections.as_ref().map(|r| r.bodies.clone()).unwrap_or_default();
@@ -413,13 +419,16 @@ pub(super) fn reflection_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     {
         app.set_status(error, true);
     }
+    reflection_sampling_controls(app, ui);
+}
+
+/// Existing global reflection budget, shared during the Sampling-editor migration.
+pub(super) fn reflection_sampling_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let depth = app.tr("render.cpu_reflection_depth").to_string();
     let samples = app.tr("render.cpu_reflection_samples").to_string();
     if let Some(reflections) = &mut app.render_workspace.view.raytrace.reflections {
-        ui.label(depth);
-        ui_kit::number_field(ui, &mut reflections.max_bounces, 1..=8, 1.0, "");
-        ui.label(samples);
-        ui_kit::number_field(ui, &mut reflections.samples, 1..=64, 1.0, "");
+        ui_kit::row(ui, &depth, |ui| ui_kit::number_field(ui, &mut reflections.max_bounces, 1..=8, 1.0, ""));
+        ui_kit::row(ui, &samples, |ui| ui_kit::number_field(ui, &mut reflections.samples, 1..=64, 1.0, ""));
     } else {
         ui.small(app.tr("render.cpu_reflection_empty"));
     }
@@ -547,7 +556,7 @@ pub(super) fn light_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                 ui.label(minimum);
                 ui_kit::number_field(ui, &mut light.minimum_distance_mm, 0.001..=1e6, 0.01, " mm");
                 let mut spot = light.cone.is_some();
-                if ui_kit::checkbox(ui, "Spot cone", &mut spot).changed() {
+                if ui_kit::checkbox(ui, crate::i18n::tr("render.spot_cone"), &mut spot).changed() {
                     light.cone = spot.then_some(solidcraft_engine::render::job::SpotConeOptions {
                         emitted_axis: [0.0, 0.0, -1.0],
                         inner_half_angle_radians: 0.2,
@@ -555,10 +564,11 @@ pub(super) fn light_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                     });
                 }
                 if let Some(cone) = &mut light.cone {
-                    vector(ui, "Emitted axis", &mut cone.emitted_axis, -1e8..=1e8, 0.01, "");
-                    for (label, value) in
-                        [("Inner half angle", &mut cone.inner_half_angle_radians), ("Outer half angle", &mut cone.outer_half_angle_radians)]
-                    {
+                    vector(ui, crate::i18n::tr("render.emitted_axis"), &mut cone.emitted_axis, -1e8..=1e8, 0.01, "");
+                    for (label, value) in [
+                        (crate::i18n::tr("render.inner_half_angle"), &mut cone.inner_half_angle_radians),
+                        (crate::i18n::tr("render.outer_half_angle"), &mut cone.outer_half_angle_radians),
+                    ] {
                         ui.label(label);
                         let mut degrees = value.to_degrees();
                         if ui_kit::number_field(ui, &mut degrees, 0.0..=90.0, 0.1, " deg").changed() {

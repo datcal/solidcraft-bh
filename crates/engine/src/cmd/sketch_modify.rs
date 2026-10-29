@@ -9,6 +9,7 @@ use solidcraft_geom::Vec2;
 use solidcraft_sketch::{ConstraintKind, Curve, CurveKind, Shape, Sketch, intersections, intersections_within};
 
 use super::sketch::{add_c, edit, ids_of, solve_current};
+use super::sketch_store;
 use super::{CommandSpec, in_sketch};
 use crate::params::{bad, bool_, expr, num, req_expr, req_vec2, str_, string_list, vec2, vec2_list};
 use crate::{Result, Session};
@@ -23,7 +24,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "MODIFY")
         .icon("sketch_fillet")
         .enabled(in_sketch)
-        .params(concat!("point: corner shared by two curves (\"l1.end\") | points: [corners] (all rounded alike: one radius, the rest equal) | a, b: two lines or arcs meeting at a corner; radius: expr. A corner that dimensions or constraints measure to stays as a virtual sharp corner on both curves' extensions (`virtual_corners`; the moved ones in `moved_to_virtual_corner`)", created_doc!())),
+        .params(concat!("point: corner shared by two curves (\"l1.end\") | points: [corners] (all rounded alike: one radius, the rest equal; a corner is a point reference or {a, b}, the two curves meeting there) | a, b: two lines or arcs meeting at a corner; radius: expr. A corner that dimensions or constraints measure to stays as a virtual sharp corner on both curves' extensions (`virtual_corners`; the moved ones in `moved_to_virtual_corner`)", created_doc!())),
     CommandSpec::new("sketch.chamfer.equal_distance", "Equal Distance Chamfer", chamfer_equal)
         .at("SKETCH", "MODIFY")
         .icon("sketch_chamfer")
@@ -1305,12 +1306,21 @@ fn cut_corner(
     Ok((fix(ta), fix(tb), pc, kept.unwrap_or_default()))
 }
 
+/// A `points` entry: the two curves meeting at the corner (`a` and `b`) as given, or a point
+/// reference to round.
+fn corner_arg(q: &Value) -> Value {
+    match q {
+        Value::Object(o) if o.contains_key("a") || o.contains_key("b") || o.contains_key("point") => q.clone(),
+        _ => json!({ "point": q }),
+    }
+}
+
 fn fillet(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.fillet";
     let r_expr = req_expr(cmd, p, "radius")?;
     // Several corners at once (`points`), each like a single `point`.
     let corners: Vec<Value> = match p.get("points").and_then(Value::as_array) {
-        Some(a) if !a.is_empty() && a.len() <= 500 => a.iter().map(|q| json!({ "point": q })).collect(),
+        Some(a) if !a.is_empty() && a.len() <= 500 => a.iter().map(corner_arg).collect(),
         Some(_) => return Err(bad(cmd, "`points` must list 1…500 corners")),
         None => vec![p.clone()],
     };
@@ -1942,7 +1952,7 @@ fn offset_group(sk: &mut Sketch, ids: &[String], eligible: &std::collections::Ha
 
 fn offset(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.offset";
-    let ids = string_list(p, "curves");
+    let ids = string_list(cmd, p, "curves")?;
     if ids.is_empty() || ids.len() > 500 {
         return Err(bad(cmd, "`curves` must list 1…500 curves"));
     }
@@ -2061,7 +2071,7 @@ fn offset(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn break_offset(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.offset.break";
-    let sketch = super::sketch::target_sketch(s, p, cmd)?;
+    let sketch = sketch_store::target(s, p, cmd)?;
     let (out, info) = edit(s, p, cmd, true, |sk, doc| {
         let output = str_(p, "curve").ok_or_else(|| bad(cmd, "`curve` must name an offset output"))?;
         let record = sk.freeform_offsets.iter().position(|record| record.output == output);
@@ -2081,7 +2091,7 @@ fn break_offset(s: &mut Session, p: &Value) -> Result<Value> {
         if !rep.keeps_orientation() {
             return Err(bad(cmd, rep.failure(|_| "cannot break an offset with conflicting dimensions".into())));
         }
-        sk.validate_periodic_splines()?;
+        sketch_store::checked(sk)?;
         if let Some(association) = sk
             .offsets
             .iter()
@@ -2220,7 +2230,7 @@ fn freeze_offset_profiles(doc: &mut solidcraft_doc::Document, sketch: u64, bound
 
 /// Curves and lone points named in `entities`.
 fn entities(sk: &Sketch, p: &Value, cmd: &str) -> Result<(Vec<usize>, Vec<usize>)> {
-    let ids = string_list(p, "entities");
+    let ids = string_list(cmd, p, "entities")?;
     if ids.is_empty() {
         return Err(bad(cmd, "`entities` must list sketch curves or points"));
     }
@@ -2291,7 +2301,7 @@ fn copy_through(
                 (kind, "e")
             }
             CurveKind::Spline { .. } => (kind, "s"),
-            CurveKind::Conic { .. } => (kind, "k"),
+            CurveKind::Conic { .. } => (kind, "n"),
             CurveKind::Line { a, b } => (CurveKind::Line { a: m(a), b: m(b) }, "l"),
             CurveKind::Circle { c, r } => (CurveKind::Circle { c: m(c), r: r * scale_r }, "c"),
             CurveKind::Arc { c, a, b } => {
@@ -2496,7 +2506,7 @@ fn move_copy(s: &mut Session, p: &Value) -> Result<Value> {
         let rot = rotate(c, ang);
         let f = move |q: Vec2| rot(q) + t;
         let mut links = Vec::new();
-        for entity in string_list(p, "entities") {
+        for entity in string_list(cmd, p, "entities")? {
             if let Some(link) = super::sketch_create::text_link(sk, &entity)
                 && !links.iter().any(|old| old == link)
             {

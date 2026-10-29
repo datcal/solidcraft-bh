@@ -119,6 +119,7 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 setting::zoom_to_cursor(app, ui);
                 setting::zoom_reverse(app, ui);
                 setting::pan_reverse_x(app, ui);
+                setting::pan_reverse_y(app, ui);
             });
             ui.allocate_ui_with_layout(egui::vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                 setting::smooth_wheel_zoom(app, ui);
@@ -131,6 +132,8 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 setting::direct_interaction(app, ui);
             });
         });
+        let cursor = ui_kit::checkbox(ui, crate::i18n::tr_label("Show tool at cursor"), &mut app.ui.tool_cursor);
+        crate::scenario::publish_target("view:tool_cursor", cursor.rect);
         ui_kit::divider(ui, "navigation_view_controls");
         ui_kit::settings_form(ui, 150.0, |ui| {
             ui_kit::row(ui, app.tr_label("View navigator"), |ui| {
