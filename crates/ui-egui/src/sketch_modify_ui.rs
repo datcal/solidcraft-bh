@@ -256,6 +256,15 @@ pub fn candidate(d: &Dialog, session: &solidcraft_engine::Session, hit: &Hit) ->
     let active = session.active_sketch?;
     match hit {
         Hit::SketchCurve { sketch, .. } | Hit::SketchPoint { sketch, .. } if *sketch != active => None,
+        Hit::SketchCurve { id, .. } if matches!(d.kind, Kind::SketchModify(Mod::Corner { .. })) => {
+            let state = session.world_state();
+            let sk = &state.sketch(active)?.sketch;
+            if sk.is_spatial_corner_curve(id) {
+                return None;
+            }
+            sk.curve_index(id)?;
+            d.active_input()?.accepts(hit, Some(active), |_, _| false)
+        }
         _ => d.active_input()?.accepts(hit, Some(active), |_, _| false),
     }
 }
@@ -794,14 +803,26 @@ pub fn commands(app: &SolveApp, k: &Mod, inputs: &[SelInput], extra: &Map<String
             if entities.is_empty() {
                 return Err("Select the sketch curves or points to mirror first".into());
             }
-            // The AXES mask also takes an origin axis, which is not a curve of this sketch and
-            // cannot be a mirror line.
             let line = match items(inputs, 1).first() {
-                Some(Sel::SketchCurve { id, .. }) => id.clone(),
-                Some(_) => return Err("The mirror line must be a straight curve of this sketch, not an origin axis".into()),
+                Some(Sel::SketchCurve { id, .. }) => json!(id),
+                Some(sel @ Sel::Axis { name }) if matches!(name.as_str(), "X" | "Y" | "Z") => {
+                    if let Some(axis) = crate::tools::sketch_axis_of(app, name) {
+                        json!(axis)
+                    } else {
+                        let (origin, dir) = crate::dialogs::axis_of(app, sel).ok_or("Select an origin axis")?;
+                        let st = app.session.world_state();
+                        let plane =
+                            st.sketch(app.session.active_sketch.ok_or("No sketch is being edited")?).ok_or("The sketch no longer exists")?.plane;
+                        if plane.normal().dot(dir).abs() > 1e-9 || plane.normal().dot(origin - plane.origin).abs() > 1e-6 {
+                            return Err("The origin axis must lie in the sketch plane".into());
+                        }
+                        json!({"axis":name})
+                    }
+                }
+                Some(_) => return Err("The mirror line must be a straight curve of this sketch or an origin axis in its plane".into()),
                 None => return Err("Select the mirror line".into()),
             };
-            if entities.contains(&line) {
+            if line.as_str().is_some_and(|line| entities.iter().any(|entity| entity == line)) {
                 return Err("The mirror line cannot also be mirrored".into());
             }
             ("sketch.mirror", json!({"entities": entities, "line": line}))

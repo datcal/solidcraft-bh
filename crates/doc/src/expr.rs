@@ -127,7 +127,7 @@ impl Kind {
 }
 
 /// Units a parameter or an expression may use: name, kind and size (mm or radians).
-pub const UNITS: [(&str, Kind, f64); 14] = [
+pub const UNITS: &[(&str, Kind, f64)] = &[
     ("mm", Kind::Length, 1.0),
     ("cm", Kind::Length, 10.0),
     ("m", Kind::Length, 1000.0),
@@ -145,7 +145,7 @@ pub const UNITS: [(&str, Kind, f64); 14] = [
 ];
 
 /// Functions an expression may call (name, signature) — for autocomplete and help.
-pub const FUNCTIONS: [(&str, &str); 23] = [
+pub const FUNCTIONS: &[(&str, &str)] = &[
     ("sin", "sin(angle)"),
     ("cos", "cos(angle)"),
     ("tan", "tan(angle)"),
@@ -172,7 +172,7 @@ pub const FUNCTIONS: [(&str, &str); 23] = [
 ];
 
 /// Constants an expression may use.
-pub const CONSTANTS: [&str; 2] = ["pi", "PI"];
+pub const CONSTANTS: &[&str] = &["pi", "PI"];
 
 /// Kind and size (mm or radians per unit) of a parameter's unit; empty means unit-less.
 pub fn unit_info(u: &str) -> Option<(Kind, f64)> {
@@ -980,6 +980,24 @@ fn call(f: &str, args: &[Value], d: Defaults) -> Result<Value, DocError> {
         }
         _ => return Err(DocError::Expr(format!("unknown function `{f}`"))),
     })
+}
+
+/// Evaluate a count: a unit-less whole number. A length or angle says how to fix it, and a
+/// fraction is refused rather than rounded to a different number of copies.
+pub fn eval_count(s: &str, vals: &BTreeMap<String, Value>) -> Result<f64, DocError> {
+    let e = s.trim();
+    let value = eval_with(e, &|n| vals.get(n).copied().ok_or_else(|| DocError::Expr(format!("unknown parameter `{n}`"))))?;
+    if let Some(kind @ (Kind::Length | Kind::Angle)) = value.kind() {
+        let subject = if vals.contains_key(e) { format!("`{e}`") } else { "this expression".into() };
+        let remedy = if vals.contains_key(e) { "set its Unit to none to use it as a count" } else { "use a unit-less expression as a count" };
+        return Err(DocError::Expr(format!("{subject} is {} ({}); {remedy}", value.describe(), kind.default_unit())));
+    }
+    let n = value.to_kind(Kind::Unitless)?;
+    // Allow float noise such as `10 / 3 * 3`, never a real fraction.
+    if !n.is_finite() || (n - n.round()).abs() > 1e-9 {
+        return Err(DocError::Expr(format!("a count must be a whole number; `{e}` is {n}")));
+    }
+    Ok(n.round())
 }
 
 /// Evaluate an expression; `lookup` resolves parameter names. Bare numbers are mm / degrees.

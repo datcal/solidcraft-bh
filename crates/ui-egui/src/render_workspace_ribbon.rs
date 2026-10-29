@@ -15,6 +15,7 @@ fn handled(id: &str) -> bool {
             id,
             "render.aging.describe"
                 | "render.effects.describe"
+                | "render.environment.set"
                 | "render.preset.resolve"
                 | "render.preset.apply"
                 | "render.settings.get"
@@ -106,6 +107,10 @@ pub(super) fn action_ready(app: &SolveApp, id: &str) -> Result<(), String> {
 }
 
 pub(super) fn command_info(app: &SolveApp, command: &CommandSpec) -> CommandInfo {
+    // Play History swaps to Stop History while it runs, wherever the command is shown.
+    if command.id == "timeline.play" {
+        return crate::timeline::playback_command_info(app, command);
+    }
     let mut info = command.info(&app.session);
     if info.enabled
         && super::active(app)
@@ -125,7 +130,13 @@ pub(super) fn perform_job(app: &mut SolveApp, id: &str) -> Result<(), String> {
     match id {
         "render.preflight" => {
             let request = super::image_params(app)?;
-            let reply = app.run(id, request.clone())?;
+            let reply = match app.run(id, request.clone()) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    inspector::record_check(app, &request, &json!({"error":error}));
+                    return Err(error);
+                }
+            };
             cpu::record_checked(app, &request, &reply);
             inspector::record_check(app, &request, &reply);
             app.set_status(app.tr("render.image_supported").to_string(), false);
@@ -181,12 +192,14 @@ pub(super) fn presentation(app: &SolveApp) -> solidcraft_engine::render::job::pr
 
 fn focus(app: &mut SolveApp, page: inspector::Page, category: Option<&str>) {
     app.render_workspace.view.inspector.hidden = false;
-    let page = if matches!(page, inspector::Page::Effects | inspector::Page::Diagnostics) {
-        inspector::reveal(app, if page == inspector::Page::Effects { "render_output_effects" } else { "render_output_check" });
-        inspector::Page::Output
-    } else {
-        page
+    let kind = match page {
+        inspector::Page::Sampling => "sampling",
+        inspector::Page::Effects => "effects",
+        inspector::Page::Diagnostics => "check",
+        inspector::Page::Output => "output",
+        _ => "nothing",
     };
+    let _ = app.run("view.render_select", json!({"kind":kind}));
     app.render_workspace.view.inspector.page = page;
     if let Some(category) = category {
         library::open_category(app, category);
@@ -246,7 +259,7 @@ fn navigate(app: &mut SolveApp, id: &str) -> Result<(), String> {
         "render.library.studio.prepare" => focus(app, Page::Lighting, Some("rigs")),
         "render.library.studio.apply" => focus(app, Page::Lighting, None),
         "render.library.environment.apply" => focus(app, Page::Environment, Some("hdr")),
-        "render.hdr.inspect" | "render.settings.capture_hdr" => focus(app, Page::Environment, None),
+        "render.environment.set" | "render.hdr.inspect" | "render.settings.capture_hdr" => focus(app, Page::Environment, None),
         "render.stage.backdrop" => focus(app, Page::Background, None),
         "render.stage.ground" | "render.stage.clear" => {
             focus(app, Page::Background, None);
@@ -255,7 +268,10 @@ fn navigate(app: &mut SolveApp, id: &str) -> Result<(), String> {
         "render.settings.apply" => inspector::restore_camera(app)?,
         "render.camera.fit" => inspector::fit_subject(app)?,
         "render.camera.get" | "render.camera.set" => focus(app, Page::Camera, None),
-        "render.quality.prepare" => focus(app, Page::Output, Some("quality")),
+        "render.quality.prepare" => {
+            focus(app, Page::Output, Some("quality"));
+            library::review_selected_quality(app)?;
+        }
         "render.status" | "render.backends" => focus(app, Page::Diagnostics, None),
         _ => return Err(crate::i18n::tr("render.error_interactive_command").into()),
     }

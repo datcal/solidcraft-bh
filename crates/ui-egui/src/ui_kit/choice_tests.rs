@@ -5,6 +5,85 @@ use crate::scenario;
 use egui::Ui;
 
 #[test]
+fn segmented_allocates_only_its_reserved_row() {
+    for layout in [egui::Layout::top_down(egui::Align::Min), egui::Layout::left_to_right(egui::Align::Center)] {
+        for width in [160.0, 320.0, 640.0] {
+            for enabled in [&[][..], &[true, false, true, false][..], &[false; 4][..]] {
+                let ctx = crate::fonts::test_context();
+                frame(&ctx, vec![], |ui| {
+                    let bounds = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(width, 120.0));
+                    let builder = || egui::UiBuilder::new().max_rect(bounds).layout(layout);
+                    let mut expected = ui.new_child(builder());
+                    let mut actual = ui.new_child(builder());
+                    expected.allocate_exact_size(egui::vec2(width, row_height()), egui::Sense::hover());
+                    let mut selected = 0;
+                    assert!(!segmented(&mut actual, &mut selected, &["A", "B", "C", "D"], Segments { enabled, ..Default::default() }));
+                    assert_eq!(actual.min_rect(), expected.min_rect(), "segments must not expand the parent bounds");
+                    assert_eq!(actual.cursor(), expected.cursor(), "segments must not advance the parent beyond the row");
+                    let next = egui::vec2(24.0, 20.0);
+                    assert_eq!(
+                        actual.allocate_exact_size(next, egui::Sense::hover()).0,
+                        expected.allocate_exact_size(next, egui::Sense::hover()).0,
+                        "the following control must retain its allocation"
+                    );
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn segmented_click_respects_parent_and_option_availability() {
+    for parent_enabled in [false, true] {
+        // Missing availability entries retain the enabled default.
+        for enabled in [&[][..], &[true][..], &[true, true][..], &[true, false][..]] {
+            let ctx = crate::fonts::test_context();
+            scenario::clear_handles();
+            let mut selected = 0;
+            let mut changed = false;
+            let mut draw = |ui: &mut Ui| {
+                if !parent_enabled {
+                    ui.disable();
+                }
+                row(ui, "Availability", |ui| {
+                    changed |= segmented(ui, &mut selected, &["A", "B"], Segments { enabled, ..Default::default() });
+                });
+            };
+            frame(&ctx, vec![], &mut draw);
+            let pos = scenario::handle_at("dialog:Availability:B").expect("disabled segments still publish targets");
+            frame(&ctx, pointer(pos, true), &mut draw);
+            frame(&ctx, pointer(pos, false), &mut draw);
+            let should_change = parent_enabled && enabled.get(1).copied().unwrap_or(true);
+            assert_eq!(selected, usize::from(should_change));
+            assert_eq!(changed, should_change);
+        }
+    }
+}
+
+#[test]
+fn segmented_availability_keeps_unsupported_options_visible_and_inert() {
+    let ctx = crate::fonts::test_context();
+    let mut selected = 1;
+    let mut draw = |ui: &mut Ui| {
+        row(ui, "Backdrop availability", |ui| {
+            segmented(
+                ui,
+                &mut selected,
+                &["World", "Colour", "Gradient", "Clear"],
+                Segments { enabled: &[false, true, false, true], ..Default::default() },
+            );
+        });
+    };
+    frame(&ctx, vec![], &mut draw);
+    for option in ["World", "Gradient"] {
+        let pos = scenario::handle_at(&format!("dialog:Backdrop availability:{option}")).unwrap();
+        frame(&ctx, pointer(pos, true), &mut draw);
+        frame(&ctx, pointer(pos, false), &mut draw);
+    }
+    assert_eq!(selected, 1);
+}
+
+#[test]
 fn segmented_click_changes_selection_and_keeps_all_choices_visible() {
     let ctx = crate::fonts::test_context();
     let mut selected = 0;

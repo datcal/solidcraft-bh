@@ -329,11 +329,12 @@ enum Scope {
 }
 
 fn scope(id: &str) -> Scope {
-    if id.starts_with("render.") {
+    if id.starts_with("render.") || matches!(id, "appearance.paint" | "appearance.pick_up") {
         return Scope::Render;
     }
     match solidcraft_engine::find_command(id).map(|c| c.tab) {
         Some("SKETCH") => Scope::Sketch,
+        Some(tab) if tab.starts_with("RENDER") => Scope::Render,
         Some("") | None => Scope::Everywhere,
         Some(_) => Scope::Model,
     }

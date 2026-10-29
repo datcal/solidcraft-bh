@@ -47,6 +47,13 @@ panel, and in the right-click menu of a body) open the same dialog with that for
 the selected bodies as STL, 3MF or 3MF with face tags (below) to a file you name, and you can change
 the format there.
 
+A 3MF has one object per body, so a slicer arranges the bodies of a multi-body part apart on the
+bed. Scripts and the control channel can keep each component together: `file.export` or
+`file.save_mesh` with `objects: "component"` writes every placed component that holds two or more
+bodies as one 3MF object whose parts are those bodies. PrusaSlicer, OrcaSlicer, Bambu Studio and
+Cura then load it as one object with a part per body, and each part can take its own filament. The
+design's own bodies, and a component with a single body, stay objects of their own.
+
 **File → Send to Slicer** (also on the Insert tab's Files panel, and in the right-click menu of a
 body) is the short way: it saves the selected bodies as a 3MF in millimetres, without face tags,
 and sends it to a slicer. It always asks which one and pre-selects the slicer you used last time,

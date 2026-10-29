@@ -199,7 +199,7 @@ pub const SECTIONS: &[Section] = &[
             "inspect.continuity",
         ],
     },
-    Section { tab: "INSPECT", panel: "HISTORY", promoted: 2, ids: &["timeline.dependents", "document.inspect"] },
+    Section { tab: "INSPECT", panel: "HISTORY", promoted: 3, ids: &["timeline.play", "timeline.dependents", "document.inspect"] },
     Section {
         tab: "MANAGE",
         panel: "PARAMETERS",
@@ -323,9 +323,6 @@ const LEGACY_RENDER_SECTIONS: &[Section] = &[
             "render.library.surface.prepare",
             "render.library.surface.unbind",
             "render.library.physical.prepare",
-            "appearance.paint",
-            "appearance.pick_up",
-            "appearance.replace",
         ],
     },
     Section {
@@ -370,9 +367,6 @@ const LEGACY_RENDER_SECTIONS: &[Section] = &[
 /// Compact source labels for painted big buttons only. Menus, search and tooltips
 /// retain the engine label. Route these through `tr_label`, like other UI labels.
 pub const RIBBON_LABELS: &[(&str, &str)] = &[
-    ("appearance.paint", "Paint"),
-    ("appearance.pick_up", "Pick Up"),
-    ("appearance.replace", "Replace"),
     ("render.batch", "All Shots"),
     ("render.cancel", "Cancel"),
     ("render.export", "Export Image"),

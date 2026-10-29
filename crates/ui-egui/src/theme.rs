@@ -769,6 +769,10 @@ pub struct Tokens {
     pub sketch_halo: Color32,
     /// Fixed (locked) sketch geometry.
     pub sketch_locked: Color32,
+    /// The open sketch's curves and points that a failing constraint holds, and that
+    /// constraint's glyph or dimension, while the constraints conflict (#7244). The error red by
+    /// default; a theme file that sets `error` but not this key takes its `error`.
+    pub sketch_conflict: Color32,
     /// Sketch dimensions: driving, driven (reference). Each theme gives them a colour of their
     /// own, apart from the sketch curves they measure (#7861).
     pub dimension: Color32,
@@ -927,6 +931,7 @@ impl Tokens {
             sketch: view.sketch,
             sketch_fixed: view.sketch_fixed,
             sketch_locked: view.sketch_locked,
+            sketch_conflict: view.sketch_conflict,
             dimension: view.dimension,
             dimension_driven: view.dimension_driven,
             sketch_point: view.sketch_point,

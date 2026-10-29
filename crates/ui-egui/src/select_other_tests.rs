@@ -562,3 +562,56 @@ fn a_press_that_opened_the_list_does_not_move_the_view_when_it_moves_on() {
         assert_eq!(h.app.cam, cam, "{slot}: the view did not move under the open list");
     }
 }
+
+/// Zooming out does not make a click reach through the body. The pixel of the box's hidden far
+/// corner is on the near +X face, so every distance picks something standing on that face —
+/// the face, or one of its edges or corners once the box is small on screen — never the far
+/// side behind it. The occlusion slack used to be cut from the camera's distance, so far
+/// enough out the whole body fitted inside it.
+#[test]
+fn a_zoomed_out_click_picks_the_near_face_not_an_edge_through_the_body() {
+    let mut h = Harness::new();
+    h.app.set_origin_shown(false);
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":10,"corner":[-5,-5,-5]})).unwrap();
+    for distance in [40.0, 300.0, 1000.0, 3000.0] {
+        h.app.cam.distance = distance;
+        h.settle();
+        let at = h.at(&json!({"world": [0, 5, -5]})).unwrap();
+        let proj = crate::viewport::projection(&h.app, h.app.viewport.rect.unwrap());
+        let hits = crate::viewport::pick(&h.app, &proj, egui::pos2(at[0] as f32, at[1] as f32));
+        let first = hits.first().expect("the box is under the cursor");
+        let point = match first {
+            crate::viewport::Hit::Face { point, .. } | crate::viewport::Hit::Vertex { point, .. } => *point,
+            crate::viewport::Hit::Edge { mid, .. } => *mid,
+            other => panic!("at {distance} mm away the box is not picked: {other:?}"),
+        };
+        assert!(point.x > 4.9, "at {distance} mm away the pick is behind the near face: {first:?}");
+    }
+}
+
+/// A small part on a large one is picked by its own size, not the assembly's: the 2 mm box's
+/// far corner is 2 mm behind its near face, and a slack cut from the 200 mm plate (or from the
+/// camera) reached straight through it — the kraken board's 2.54 mm connectors picked their far
+/// side from 5 mm behind.
+#[test]
+fn a_small_body_on_a_large_one_is_not_picked_through() {
+    let mut h = Harness::new();
+    h.app.set_origin_shown(false);
+    h.app.run("solid.box", json!({"length":200,"width":200,"height":10,"corner":[-100,-100,-10]})).unwrap();
+    h.app.run("solid.box", json!({"length":2,"width":2,"height":2,"corner":[-1,-1,0]})).unwrap();
+    for distance in [20.0, 100.0, 600.0] {
+        h.app.cam.distance = distance;
+        h.settle();
+        // The small box's far bottom corner, whose pixel is on its near +X face.
+        let at = h.at(&json!({"world": [0, 1, 0]})).unwrap();
+        let proj = crate::viewport::projection(&h.app, h.app.viewport.rect.unwrap());
+        let hits = crate::viewport::pick(&h.app, &proj, egui::pos2(at[0] as f32, at[1] as f32));
+        let first = hits.first().expect("the small box is under the cursor");
+        let point = match first {
+            crate::viewport::Hit::Face { point, .. } | crate::viewport::Hit::Vertex { point, .. } => *point,
+            crate::viewport::Hit::Edge { mid, .. } => *mid,
+            other => panic!("at {distance} mm away the small box is not picked: {other:?}"),
+        };
+        assert!(point.x > 0.9, "at {distance} mm away the pick is behind the near face: {first:?}");
+    }
+}

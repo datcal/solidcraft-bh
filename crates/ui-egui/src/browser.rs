@@ -62,6 +62,10 @@ pub(crate) fn reveal_body(app: &mut SolveApp, body: &str) {
     }
 }
 
+pub(crate) fn reveal_in_history(app: &mut SolveApp, id: u64) {
+    features::reveal_in_history(app, id);
+}
+
 #[cfg(test)]
 #[path = "browser_model_tests.rs"]
 mod model_tests;
@@ -1353,6 +1357,14 @@ fn component_rows_inner(
     {
         acts.drop = Some(DropAction::Component { to: id, folder: d.folder, keys: d.keys.clone() });
     }
+
+    // A placement row dropped on the design row moves out to the design.
+    if let Some(resp) = &r.resp
+        && let Some(d) = occurrence_drop_target(ui, resp, |d| occurrence_can_land(app, d, id))
+    {
+        let occurrence = d.path.last().copied().unwrap_or(0);
+        acts.drop = Some(DropAction::Reparent { occurrence, path: d.path.clone(), parent: id, parent_path: None });
+    }
     if !open {
         return;
     }
@@ -1478,6 +1490,11 @@ fn occurrence_rows_inner(
                 ui.label(inherited.trim_start());
             }
         });
+        // Dragging the row moves the placement it stands for. A press on its fold arrow, eye or
+        // radio is not a drag of the row, so those controls keep their own jobs.
+        if resp.drag_started() && !r.on_control {
+            resp.dnd_set_drag_payload(OccurrenceDrag { path: path.to_vec(), component: placement.component });
+        }
     }
     if r.fold {
         toggle(app, key, true);
@@ -1514,6 +1531,14 @@ fn occurrence_rows_inner(
         && let Some(d) = drop_target(ui, resp, |d: &Drag| d.comp != placement.component && d.folder != "construction", DropMark::Box)
     {
         acts.drop = Some(DropAction::Component { to: placement.component, folder: d.folder, keys: d.keys.clone() });
+    }
+
+    // A placement row dropped on this one moves into this row's component.
+    if let Some(resp) = &r.resp
+        && let Some(d) = occurrence_drop_target(ui, resp, |d| occurrence_can_land(app, d, placement.component))
+    {
+        let occurrence = d.path.last().copied().unwrap_or(0);
+        acts.drop = Some(DropAction::Reparent { occurrence, path: d.path.clone(), parent: placement.component, parent_path: Some(path.to_vec()) });
     }
     if !open {
         return;
@@ -1665,10 +1690,15 @@ fn origin_rows(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize, acts: &mut A
             // Through the command, so the Origin row's eye is an undo step (#2219).
             let _ = app.run("browser.visibility", json!({ "items": [k], "visible": !visible }));
         }
-        if let Some(p) = r.secondary
-            && icon == "plane"
-        {
-            crate::context_menu::open_for(app, p, Target::OriginPlane { name: k.into() });
+        if let Some(p) = r.secondary {
+            let target = match icon {
+                "plane" => Some(Target::OriginPlane { name: k.into() }),
+                "axis" => Some(Target::OriginAxis { name: k.into() }),
+                _ => None,
+            };
+            if let Some(target) = target {
+                crate::context_menu::open_for(app, p, target);
+            }
         }
         if r.hovered && icon == "plane" {
             acts.hover_plane = Some(k.into());
@@ -2020,6 +2050,8 @@ struct Entry {
     patterns: Option<String>,
     label: String,
     icon: &'static str,
+    /// The tooltip's message id, if the row has one ([`Row::tip`]).
+    tip: Option<&'static str>,
     visible: bool,
     selected: bool,
     color: Option<Color32>,
@@ -2034,14 +2066,23 @@ struct Entry {
 
 impl Entry {
     fn body(app: &SolveApp, b: &solidcraft_engine::doc::ModelBody, world: String) -> Self {
+        // A mesh body (an imported STL, 3MF, OBJ, …) has no faces to model on; an open shell is a
+        // surface body, not a solid.
+        let (icon, tip) = if b.body.is_mesh() {
+            ("mesh_body", "ui.body_kind_mesh")
+        } else if b.is_surface() {
+            ("surface", "ui.body_kind_surface")
+        } else {
+            ("body", "ui.body_kind_solid")
+        };
         Self {
             thing: Thing::Body(world.clone()),
             key: b.name.clone(),
             row_key: format!("b:{world}"),
             patterns: None,
             label: b.name.clone(),
-            // An open shell is a surface body, not a solid.
-            icon: if b.is_surface() { "surface" } else { "body" },
+            icon,
+            tip: Some(tip),
             visible: !app.session.visibility.hidden_bodies.contains(&world),
             selected: app.session.selection.iter().any(|s| matches!(s, Sel::Body { name } if name == &world)),
             color: None,
@@ -2072,6 +2113,7 @@ impl Entry {
                 f.name.clone()
             },
             icon: "sketch",
+            tip: None,
             visible: sketch_visible(app, f.id),
             selected: active || app.session.selection.iter().any(|s| matches!(s, Sel::Feature { id } if *id == f.id)),
             color: if lost { Some(t.error) } else { active.then_some(t.sketch_accent) },
@@ -2097,6 +2139,7 @@ impl Entry {
             patterns: None,
             label: f.name.clone(),
             icon: crate::timeline::icon_of(&f.kind),
+            tip: None,
             visible: !app.session.visibility.hidden_origin.contains(&f.name),
             selected: app.session.selection.contains(&sel),
             color: None,
@@ -2130,6 +2173,15 @@ struct Drag {
     comp: u64,
     folder: &'static str,
     keys: Vec<String>,
+}
+
+/// A placement row dragged in the tree: the exact path it sits at, and the component it places.
+#[derive(Clone, Debug)]
+struct OccurrenceDrag {
+    /// The placement's path from the design root (its own occurrence id last).
+    path: Vec<u64>,
+    /// The component the placement is an instance of.
+    component: u64,
 }
 
 /// The items of a component folder, in model order.
@@ -2273,7 +2325,9 @@ fn folder_rows_at(
     // eyes, hover and drops do its jobs. It is always open, as nothing could open it again.
     let render = crate::render_workspace::active(app);
     let folded = !render && folder == "bodies" && bodies_folded(app, comp, prefix, data.entries().count());
-    let open = folded || is_open(app, key, true);
+    // With the history in the browser the sketches are there too: their folder starts closed.
+    let default_open = !(folder == "sketches" && app.preferences.history_in_browser);
+    let open = folded || is_open(app, key, default_open);
     let inner = if folded { depth } else { depth + 1 };
     // The folder's eye is its own: hiding it hides its items without changing theirs, and its
     // items never change it. It and everything in it fade while it or a placement above is
@@ -2300,13 +2354,13 @@ fn folder_rows_at(
             )
         };
         if r.fold {
-            toggle(app, key, true);
+            toggle(app, key, default_open);
         } else if r.clicked {
             // The Bodies label is the whole set while a command is asking for bodies. The arrow
             // still folds it. With no such command, the label folds, as it always has.
             let names: Vec<String> = data.entries().flat_map(|e| e.bodies.clone()).collect();
             if !offer_bodies(app, &names, Take::Toggle) {
-                toggle(app, key, true);
+                toggle(app, key, default_open);
             }
         }
         if r.eye {
@@ -2485,6 +2539,7 @@ fn entry_row(
             fold: pattern_key.map(|_| patterns_open),
             eye: Some(visible),
             icon: e.icon,
+            kind_tip: e.tip,
             label: &e.label,
             name: true,
             selected,
@@ -2624,6 +2679,35 @@ fn drop_target(ui: &egui::Ui, resp: &egui::Response, accept: impl Fn(&Drag) -> b
     resp.dnd_release_payload::<Drag>().filter(|d| accept(d))
 }
 
+/// Whether a placement dragged from `d` may land in component `parent`: not where it already is,
+/// and not in itself or a component it holds. The command refuses those too; this keeps the row
+/// from showing a drop mark it would refuse.
+fn occurrence_can_land(app: &SolveApp, d: &OccurrenceDrag, parent: u64) -> bool {
+    let Some(id) = d.path.last().copied() else { return false };
+    let Some(o) = app.session.doc.occurrences.iter().find(|o| o.id == id) else { return false };
+    if parent == 0 {
+        // The design row takes any placement not already at the design root: there is no cycle
+        // to make at the top, and everything is inside the design.
+        return o.parent != 0;
+    }
+    o.parent != parent && !app.session.doc.inside_component(parent, d.component)
+}
+
+/// While a matching placement drag hovers the row, mark where it would land; on release, the payload.
+fn occurrence_drop_target(ui: &egui::Ui, resp: &egui::Response, accept: impl Fn(&OccurrenceDrag) -> bool) -> Option<std::sync::Arc<OccurrenceDrag>> {
+    let t = Tokens::get();
+    let hovering = resp.dnd_hover_payload::<OccurrenceDrag>().filter(|d| accept(d));
+    if hovering.is_some() {
+        let r = resp.rect;
+        ui.painter().rect_stroke(r.shrink(0.5), t.radius_sm.saturating_sub(1), Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
+    }
+    // Taking a payload takes it whatever its type: leave other drags (appearance swatches) be.
+    if !egui::DragAndDrop::has_payload_of_type::<OccurrenceDrag>(ui.ctx()) {
+        return None;
+    }
+    resp.dnd_release_payload::<OccurrenceDrag>().filter(|d| accept(d))
+}
+
 /// A drop, applied after the tree is drawn.
 enum DropAction {
     /// Into a group (before an item of it), or out of groups.
@@ -2632,6 +2716,8 @@ enum DropAction {
     Order { comp: u64, folder: &'static str, keys: Vec<String>, order: Vec<String> },
     /// Into another component (bodies and sketches).
     Component { to: u64, folder: &'static str, keys: Vec<String> },
+    /// A placement moved into another component (or the design, `parent` 0).
+    Reparent { occurrence: u64, path: Vec<u64>, parent: u64, parent_path: Option<Vec<u64>> },
 }
 
 fn apply_drop(app: &mut SolveApp, d: DropAction) {
@@ -2649,6 +2735,25 @@ fn apply_drop(app: &mut SolveApp, d: DropAction) {
                 "sketches" => app.run("component.move_sketches", json!({ "sketches": keys, "component": to })),
                 _ => Ok(serde_json::Value::Null),
             };
+        }
+        DropAction::Reparent { occurrence, path, parent, parent_path } => {
+            let mut payload = json!({ "occurrence": occurrence, "path": path, "parent": parent });
+            if let Some(pp) = parent_path {
+                payload["parent_path"] = json!(pp);
+            }
+            match app.run("occurrence.reparent", payload) {
+                Ok(out) => {
+                    let to: Vec<u64> = out
+                        .get("path")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|a| a.iter().filter_map(serde_json::Value::as_u64).collect())
+                        .unwrap_or_default();
+                    if !to.is_empty() {
+                        close_placement(app, &to);
+                    }
+                }
+                Err(e) => app.set_status(e, true),
+            }
         }
     }
 }

@@ -136,6 +136,7 @@ fn swap_in(app: &mut SolveApp, mut slot: DocSlot) -> DocSlot {
         let _ = crate::render_workspace::enter(app, false);
     }
     // Whatever was going on in the design leaves with it.
+    crate::timeline::stop_playback(app);
     crate::sketch_text_move::cancel_drag(app);
     crate::dialogs::cancel(app);
     crate::dim_view::cancel();
@@ -239,6 +240,18 @@ pub fn switch(app: &mut SolveApp, i: usize) {
         crate::linked_source::update_changed(app);
     }
     crate::edit_in_place::attach(app);
+}
+
+/// Show the next design tab (`forward`) or the previous one, going round from the last to the
+/// first (Ctrl+Tab and Ctrl+Shift+Tab, #8565). Not while tabs are being closed one after another
+/// or a "save changes?" prompt is open, as for `move_tab`.
+pub fn cycle(app: &mut SolveApp, forward: bool) {
+    let n = app.docs.slots.len();
+    if n < 2 || app.docs.closing.is_some() || app.docs.quitting.is_some() || app.docs.batch.is_some() {
+        return;
+    }
+    let a = app.docs.active;
+    switch(app, if forward { (a + 1) % n } else { (a + n - 1) % n });
 }
 
 /// The open design saved at `path`, shown or in the background.
@@ -1387,6 +1400,45 @@ mod tests {
         assert_eq!(drop_slot(90.0, 0.0, &[80.0, 200.0, 80.0], 0, 0), 0);
         assert_eq!(drop_slot(150.0, 0.0, &[80.0, 200.0, 80.0], 0, 0), 1);
         assert_eq!(drop_slot(260.0, 0.0, &[80.0, 200.0, 80.0], 0, 0), 2);
+    }
+
+    /// #8565: Ctrl+Tab shows the tab to the right and Ctrl+Shift+Tab the one to the left, going
+    /// round at either end; both are commands with their keys on the Keyboard Shortcuts page, and
+    /// `engine.execute` switches the same way. A "save changes?" prompt keeps the tab shown.
+    #[test]
+    fn ctrl_tab_and_ctrl_shift_tab_go_round_the_design_tabs() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        for k in 1..3 {
+            open_tab(&mut h.app, Session::default()).unwrap();
+            for _ in 0..k {
+                h.app.run("solid.sphere", json!({"diameter": 4})).unwrap();
+            }
+        }
+        h.frames(2);
+        assert_eq!((h.app.docs.active, h.app.session.doc.features.len()), (2, 2));
+        let press = |h: &mut crate::scenario::Harness, shift: bool| {
+            h.call("ui.key", json!({"key": "Tab", "cmd": true, "shift": shift}));
+            h.frames(2);
+            (h.app.docs.active, h.app.session.doc.features.len())
+        };
+        assert_eq!(press(&mut h, false), (0, 0), "after the last tab, the first");
+        assert_eq!(press(&mut h, false), (1, 1));
+        assert_eq!(press(&mut h, true), (0, 0));
+        assert_eq!(press(&mut h, true), (2, 2), "before the first tab, the last");
+        assert_eq!(crate::keymap::effective(&h.app, "view.next_tab").as_deref(), Some("Ctrl+Tab"));
+        assert_eq!(crate::keymap::effective(&h.app, "view.previous_tab").as_deref(), Some("Ctrl+Shift+Tab"));
+        assert_eq!(h.call("engine.execute", json!({"command": "view.next_tab"}))["ok"], true);
+        assert_eq!(h.app.docs.active, 0);
+        assert_eq!(h.call("engine.execute", json!({"command": "view.previous_tab"}))["ok"], true);
+        assert_eq!(h.app.docs.active, 2);
+        control(&mut h.app, &json!({"action": "close"}));
+        assert_eq!(h.app.docs.closing, Some(2), "the unsaved design asks first");
+        assert_eq!(press(&mut h, false).0, 2, "the asking tab stays shown");
+        control(&mut h.app, &json!({"answer": "cancel"}));
+        let mut one = app();
+        cycle(&mut one, true);
+        assert_eq!((one.docs.active, one.docs.count()), (0, 1), "a single design: nothing to go to");
     }
 
     /// #3187: dragging a tab along the strip drops it where it is released; a drag mostly down

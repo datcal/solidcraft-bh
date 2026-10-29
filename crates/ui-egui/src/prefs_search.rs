@@ -746,6 +746,22 @@ mod tests {
         assert_eq!(h.app.prefs_window.section, crate::prefs::PAGE_GRAPHICS, "Escape returns to the page from before the search");
     }
 
+    /// Typing in a number field (the largest STEP file) edits that field instead of starting
+    /// a search.
+    #[test]
+    fn preferences_number_fields_keep_typed_text() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        crate::prefs::open_at(&mut h.app, crate::prefs::PAGE_GENERAL);
+        h.frames(2);
+        let field = crate::scenario::rect_of("prefs:max_step_file_mb").expect("STEP limit field");
+        h.step(&serde_json::json!({"click": [field.center().x, field.center().y]})).expect("click the field");
+        h.frames(2);
+        h.step(&serde_json::json!({"text": "7"})).expect("type");
+        h.frames(2);
+        assert!(h.app.prefs_window.filter.is_empty(), "typed `{}` into the search", h.app.prefs_window.filter);
+    }
+
     /// The selected match is scrolled to when the arrows move it, not on every frame, so the
     /// wheel can scroll the results away from it.
     #[test]

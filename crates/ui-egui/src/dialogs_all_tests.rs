@@ -13,7 +13,10 @@ fn measure_input_fits_external_sketch_geometry() {
     assert!(fits(accept, &curve));
     assert!(fits(accept, &point));
     assert_eq!(d.items(), vec![curve.clone(), point.clone()]);
-    assert_eq!(d.candidate(&h.app.session, &Hit::SketchCurve { sketch: 17, id: "line1".into(), straight: true }), Some(curve.clone()));
+    assert_eq!(
+        d.candidate(&h.app.session, &Hit::SketchCurve { sketch: 17, id: "line1".into(), straight: true, point: solidcraft_engine::geom::Vec3::ZERO }),
+        Some(curve.clone())
+    );
     assert_eq!(
         d.candidate(&h.app.session, &Hit::SketchPoint { sketch: 17, id: "p1".into(), at: solidcraft_engine::geom::Vec2::new(0.0, 0.0) }),
         Some(point.clone())

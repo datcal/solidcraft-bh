@@ -61,6 +61,9 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui_kit::checkbox(ui, app.tr("prefs.alt_frees_manipulators"), &mut app.preferences.manipulator_free_alt).on_hover_text(crate::i18n::tr_label(
             "On: Alt/Option or Ctrl/Cmd on extrude / gizmo arrows disables value snapping. Off: Ctrl/Cmd only.",
         ));
+        // Conflicting curves and points in the conflict colour (#7244).
+        let check = setting::sketch_conflict_colour(app, ui).on_hover_text(app.tr("prefs.sketch_conflict_colour_note"));
+        crate::scenario::publish_target("prefs:sketch_conflict_colour", check.rect);
     });
     ui_kit::settings_section(ui, "selection", app.tr("prefs.selecting"), |ui| {
         ui_kit::checkbox(ui, crate::i18n::tr_label("Click selects whole bodies"), &mut app.ui.pick_bodies);

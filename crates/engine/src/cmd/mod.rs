@@ -79,6 +79,10 @@ mod render_ui;
 #[cfg(test)]
 mod script_tests;
 mod sheet;
+pub(crate) use sheet::{
+    FlangeType, ThenStep, flange_edge, flange_edge_list, flange_position, flange_type, fold_points, fold_position, perforation_pattern, sheet_points,
+    then_list,
+};
 mod silhouette;
 mod sketch;
 pub(crate) use sketch::author_path_for_rebind;
