@@ -1014,13 +1014,40 @@ fn status_bar_spans_the_window_below_history_in_both_layouts_and_is_covered() {
 }
 
 #[test]
+fn viewport_sketch_status_distinguishes_empty_and_constrained_geometry() {
+    for mode in [LayoutMode::Docked, LayoutMode::Floating] {
+        let mut h = Harness::new();
+        h.call("ui.set", json!({"layout":mode}));
+        let corner = |h: &Harness| painted_texts(h).into_iter().filter(|t| t.starts_with("Sketch1 — ")).collect::<Vec<_>>();
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        h.settle();
+        assert_eq!(corner(&h), ["Sketch1 — No geometry yet"], "{mode:?}: an empty sketch is not fully constrained");
+        assert!(h.widget("No geometry yet").is_some(), "the palette agrees with the viewport");
+
+        let rectangle = h.app.run("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,30]})).unwrap();
+        h.settle();
+        assert_eq!(corner(&h), ["Sketch1 — 2 degrees of freedom"], "the rectangle's width and height are free");
+        h.app.run("sketch.constraint.fix", json!({"entities":rectangle["curves"]})).unwrap();
+        h.settle();
+        assert_eq!(corner(&h), ["Sketch1 — fully constrained"], "drawn geometry can be fully constrained");
+
+        h.app.run("edit.undo", json!({})).unwrap();
+        h.settle();
+        assert_eq!(corner(&h), ["Sketch1 — 2 degrees of freedom"]);
+        h.app.run("edit.undo", json!({})).unwrap();
+        h.settle();
+        assert_eq!(corner(&h), ["Sketch1 — No geometry yet"], "undoing the geometry restores the empty status");
+    }
+}
+
+#[test]
 fn status_bar_names_what_is_edited_and_the_sketch_state_and_replaces_the_views_corner_text() {
     use crate::status_bar::SketchState;
     let mut h = Harness::new();
     let corner = |h: &Harness| painted_texts(h).into_iter().filter(|t| t.starts_with("Sketch1 — ")).collect::<Vec<_>>();
     h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
     h.settle();
-    assert_eq!(corner(&h), ["Sketch1 — fully constrained"], "without the bar the state stays in the view's corner");
+    assert_eq!(corner(&h), ["Sketch1 — No geometry yet"], "without the bar the state stays in the view's corner");
     h.call("ui.prefs", json!({"status_bar": true}));
     h.settle();
     let contents = crate::status_bar::contents(&h.app);
@@ -1095,6 +1122,61 @@ fn status_bar_units_open_the_units_menu_above_the_bar_and_change_units_in_one_un
     h.settle();
     assert!(h.app.viewport.context_menu.is_some());
     h.step(&json!({"click":{"handle":"status:units"}})).unwrap();
+    h.settle();
+    assert!(h.app.viewport.context_menu.is_none());
+}
+
+#[test]
+fn status_bar_mouse_mapping_opens_the_mappings_and_picks_one_as_the_preferences_page_does() {
+    use crate::context_menu::Target;
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1400,"height":900}));
+    h.call("ui.prefs", json!({"status_bar": true}));
+    h.app.run("solid.box", json!({"length":40,"width":30,"height":20})).unwrap();
+    h.settle();
+    let doc = h.app.session.doc.to_json();
+    let undo = h.app.session.undo.len();
+    let button = rect_of("status:navigation").unwrap();
+    assert!(rect_of("status:bar").unwrap().contains_rect(button));
+    assert!(button.right() < rect_of("status:units").unwrap().left(), "the mapping sits left of the units");
+    assert_eq!(crate::status_bar::contents(&h.app).navigation, "Fusion");
+    assert!(painted_texts(&h).iter().any(|t| t == "Fusion"));
+    h.step(&json!({"click":{"handle":"status:navigation"}})).unwrap();
+    h.settle();
+    assert_eq!(h.app.menu.target, Target::Navigation);
+    assert_eq!(h.app.viewport.context_menu, Some(button.right_top()));
+    let menu = crate::context_menu::items(&h.app, &Target::Navigation);
+    let labels: Vec<_> = menu.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(labels, crate::prefs::NAV_PRESETS.iter().map(|preset| preset.translated_label()).collect::<Vec<_>>());
+    assert_eq!(menu.iter().filter(|item| item.shortcut == "current").map(|item| item.label.as_str()).collect::<Vec<_>>(), ["Fusion"]);
+    let list = h.ctx.memory(|m| m.area_rect(egui::Id::new("sc_context_menu"))).unwrap();
+    assert!(list.bottom() <= button.top() + 0.5 && list.top() >= 0.0, "{list:?} {button:?}");
+    // Each mapping, picked from the menu, sets what Preferences › Navigation sets for it.
+    for preset in crate::prefs::NAV_PRESETS {
+        let mut expected = h.app.preferences.clone();
+        crate::prefs::choose_nav_preset(&mut expected, preset);
+        if h.app.viewport.context_menu.is_none() {
+            h.step(&json!({"click":{"handle":"status:navigation"}})).unwrap();
+            h.settle();
+        }
+        h.call("ui.menuPick", json!({"item": preset.translated_label()}));
+        h.settle();
+        assert_eq!(serde_json::to_value(&h.app.preferences).unwrap(), serde_json::to_value(&expected).unwrap(), "{}", preset.id);
+        assert!(h.app.viewport.context_menu.is_none());
+        assert_eq!(crate::status_bar::contents(&h.app).navigation, preset.translated_label());
+    }
+    assert_eq!(h.app.session.doc.to_json(), doc, "a preference, not a design edit");
+    assert_eq!(h.app.session.undo.len(), undo);
+    // An unknown mapping changes nothing.
+    let before = serde_json::to_value(&h.app.preferences).unwrap();
+    let hostile = crate::context_menu::Item::action("ui.navPreset", "Nope", "").with(json!({"preset": "nope"}));
+    crate::context_menu::run_item(&mut h.app, &hostile, egui::pos2(0.0, 0.0));
+    assert_eq!(serde_json::to_value(&h.app.preferences).unwrap(), before);
+    // A second click on the button closes the menu it opened.
+    h.step(&json!({"click":{"handle":"status:navigation"}})).unwrap();
+    h.settle();
+    assert!(h.app.viewport.context_menu.is_some());
+    h.step(&json!({"click":{"handle":"status:navigation"}})).unwrap();
     h.settle();
     assert!(h.app.viewport.context_menu.is_none());
 }

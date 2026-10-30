@@ -31,7 +31,7 @@
 //!   `ui.rename {text?, commit?}` finishes the rename box
 //! - `ui.window {action: minimize|maximize|restore|toggle|close}`: what the title bar's buttons do
 //! - `ui.confirm {accept?}`: the Delete confirmation (without `accept`: what it lists)
-//! - `ui.shortcut {command, key?, replace?}`: a command's key, or bind one ("" clears)
+//! - `ui.shortcut {command, key?, slot?, replace?}`: a command's keys, or bind one ("" clears)
 //! - `ui.help {item?: about|shortcuts|report}`: the Help menu; returns the version and diagnostics
 //! - `ui.prefs {...}`: the preferences (default_units, nav, zoom_reverse, orbit_around, msaa,
 //!   length_decimals, angle_decimals); returns them all
@@ -48,7 +48,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use solidcraft_engine::io::vfs;
-use solidcraft_engine::render::StandardView;
+use solidcraft_engine::render::{Camera, StandardView};
 use solidcraft_engine::{batch_params, timing};
 
 use crate::SolveApp;
@@ -251,6 +251,7 @@ fn execute(app: &mut SolveApp, id: &str, params: Value) -> Result<Value, String>
                 | "browser.expand_all"
                 | "browser.collapse_all"
         )
+        && !id.starts_with("settings.")
         && app.session.active_sketch.is_none()
         && app.session.world_state().bodies.len() == 1
         && app.session.undo.len() <= 2
@@ -412,12 +413,17 @@ pub fn request_scope(app: &SolveApp, params: &Value) -> Result<Option<vfs::PathS
 /// mode, the section the viewport shows: an open Section Analysis dialog's preview, a sketch's
 /// Slice), with the grid and the origin's axes as `guides` says.
 pub(crate) fn view_scene(app: &SolveApp, guides: solidcraft_engine::view::Guides) -> solidcraft_engine::render::Scene {
+    let mut palette = crate::viewport::scene_palette(app.viewport_dark(), app.preferences.color_vision);
+    // The view's own background colour (#7688).
+    if let Some([r, g, b]) = app.preferences.viewport_background {
+        palette.background = (solidcraft_engine::render::Rgb(r, g, b), solidcraft_engine::render::Rgb(r, g, b));
+    }
     let mut scene = solidcraft_engine::view::scene_with_thread_markings(
         &app.session,
         &app.cam,
         crate::viewport::section_plane(app),
         solidcraft_engine::view::world_curve_parts,
-        &crate::viewport::scene_palette(app.viewport_dark(), app.preferences.color_vision),
+        &palette,
         guides,
         app.preferences.cosmetic_threads,
     );
@@ -918,17 +924,40 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         }
         "ui.scroll" => {
             let (Some(x), Some(y)) = (f("x"), f("y")) else { return err("missing x/y") };
-            app.synthetic.push(egui::Event::PointerMoved(egui::pos2(x as f32, y as f32)));
             // Mouse-wheel semantics (lines): zooms regardless of the trackpad pan
             // preference, so scripts and agents keep working. Trackpads report points.
+            // `ctrl: true` replays a Ctrl+wheel pinch in points (#8480). An explicit `unit`
+            // overrides that choice; without ctrl the default remains a line wheel.
             let speed = ctx.options(|o| o.input_options.line_scroll_speed).max(1.0);
-            let lines = f("delta").unwrap_or(-100.0) / f64::from(speed);
-            app.synthetic.push(egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Line,
-                delta: egui::vec2(0.0, lines as f32),
-                modifiers: Default::default(),
-                phase: egui::TouchPhase::Move,
-            });
+            let points = f("delta").unwrap_or(-100.0);
+            let ctrl = b("ctrl");
+            let unit = match p.get("unit") {
+                Some(Value::String(unit)) if unit == "point" => egui::MouseWheelUnit::Point,
+                Some(Value::String(unit)) if unit == "line" => egui::MouseWheelUnit::Line,
+                Some(_) => return err("`unit` must be point or line"),
+                None if ctrl => egui::MouseWheelUnit::Point,
+                None => egui::MouseWheelUnit::Line,
+            };
+            let delta = match unit {
+                // A point wheel reaches the app as points; a line wheel is scaled up by the
+                // line scroll speed, so divide it out and both land on the same points.
+                egui::MouseWheelUnit::Line => points / f64::from(speed),
+                _ => points,
+            };
+            let (x, y, delta) = (x as f32, y as f32, delta as f32);
+            if !x.is_finite() || !y.is_finite() || !delta.is_finite() {
+                return err("x, y and delta must fit finite screen coordinates");
+            }
+            let modifiers = if ctrl { egui::Modifiers::CTRL } else { Default::default() };
+            let explicit = p.get("ctrl").is_some();
+            app.synthetic.push(egui::Event::PointerMoved(egui::pos2(x, y)));
+            if explicit {
+                app.synthetic.push(egui::Event::ModifiersChanged(modifiers));
+            }
+            app.synthetic.push(egui::Event::MouseWheel { unit, delta: egui::vec2(0.0, delta), modifiers, phase: egui::TouchPhase::Move });
+            if explicit {
+                app.synthetic.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+            }
             ok(Value::Null)
         }
         "ui.key" => {
@@ -999,12 +1028,14 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
         },
         "ui.shortcut" => {
             let Some(id) = s("command") else { return err("missing `command`") };
+            let slot = p.get("slot").and_then(Value::as_u64).map(|n| usize::try_from(n).unwrap_or(usize::MAX));
+            let report = |app: &SolveApp| ok(json!({"command": id, "key": crate::keymap::effective(app, id), "keys": crate::keymap::keys(app, id)}));
             match s("key") {
-                Some(k) => match crate::keymap::bind(app, id, k, b("replace")) {
-                    Ok(()) => ok(json!({"command": id, "key": crate::keymap::effective(app, id)})),
+                Some(k) => match crate::keymap::bind_at(app, id, slot, k, b("replace")) {
+                    Ok(()) => report(app),
                     Err(e) => err(e),
                 },
-                None => ok(json!({"command": id, "key": crate::keymap::effective(app, id)})),
+                None => report(app),
             }
         }
         "ui.browser" => ok(json!({
@@ -1105,7 +1136,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
 
 /// `ui.camera`: the viewport's orbit camera (`target`, `yaw`, `pitch`, `roll` in radians,
 /// `distance` in mm, `fov`, `up`), or a new one. A field left out keeps its value, so a reply
-/// passed back sets the same view again. `fit`: frame the listed occurrences (ids or names;
+/// passed back sets the same view again. `fov` is the angle the window draws with (see [`drawn`]). `fit`: frame the listed occurrences (ids or names;
 /// `root`: the bodies outside every component), or everything (`true`), keeping the direction;
 /// `false` frames nothing.
 /// Nothing changes when a field is refused.
@@ -1119,10 +1150,10 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
     if let Some(k) = o.keys().find(|k| !FIELDS.contains(&k.as_str())) {
         return Err(format!("unknown camera field `{k}` (it takes {})", FIELDS.join(", ")));
     }
-    let mut cam = app.cam;
+    let mut cam = drawn(app);
     let sets = o.keys().any(|k| k != "fit");
     if sets {
-        let mut v = serde_json::to_value(app.cam).map_err(|e| e.to_string())?;
+        let mut v = serde_json::to_value(cam).map_err(|e| e.to_string())?;
         for (k, x) in o.iter().filter(|(k, _)| *k != "fit") {
             v[k] = x.clone();
         }
@@ -1134,10 +1165,11 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
         // Straight up or down keeps a heading, as the standard views do.
         let lim = std::f64::consts::FRAC_PI_2 - 1e-6;
         cam.pitch = cam.pitch.clamp(-lim, lim);
-        // Perspective and the up axis are settings the camera follows, not its own.
-        if cam.fov != app.cam.fov {
-            return Err("`fov` follows the perspective setting (ui.set {perspective})".into());
+        // Perspective, its angle and the up axis are settings the camera follows, not its own.
+        if cam.fov != drawn(app).fov {
+            return Err("`fov` follows Perspective view (ui.set {perspective}) and its angle (ui.prefs {perspective_fov})".into());
         }
+        cam.fov = app.cam.fov;
         if cam.up != app.cam.up {
             return Err("`up` follows the up axis preference (ui.prefs {up_axis})".into());
         }
@@ -1160,7 +1192,7 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
     };
     // A read leaves a view change that is animating alone.
     if !sets && fit.is_none() {
-        return serde_json::to_value(app.cam).map_err(|e| e.to_string());
+        return serde_json::to_value(drawn(app)).map_err(|e| e.to_string());
     }
     app.cancel_view_animation();
     app.viewport.orbit_free = None;
@@ -1170,7 +1202,17 @@ fn camera(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
         Some(Some(b)) => app.fit_bounds(b),
         None => {}
     }
-    serde_json::to_value(app.cam).map_err(|e| e.to_string())
+    serde_json::to_value(drawn(app)).map_err(|e| e.to_string())
+}
+
+/// The camera as the window draws it: with the view's angle ([`SolveApp::view_fov`]), or in Render
+/// with the Render camera's own.
+fn drawn(app: &SolveApp) -> Camera {
+    let mut cam = app.cam;
+    if !crate::render_workspace::active(app) {
+        cam.fov = app.view_fov();
+    }
+    cam
 }
 
 /// An occurrence by id or name (or a component's name: its first occurrence); 0 is the root.
@@ -1271,6 +1313,79 @@ mod tests {
         assert!(h.ctx.input(|i| i.modifiers.is_none()));
         assert!(h.app.session.selection.is_empty());
         assert!(h.app.viewport.boxsel.is_none());
+    }
+
+    /// #8480: `ui.scroll` with `ctrl: true` replays a Ctrl+wheel pinch in points. Without
+    /// `ctrl` the wheel stays a line wheel on the mouse path.
+    #[test]
+    fn scroll_sends_a_native_pinch_with_ctrl() {
+        let mut app = SolveApp::new(Session::default(), Services::default());
+        let ctx = crate::fonts::test_context();
+        let (req, _) = ControlRequest::new("ui.scroll", json!({"x":200,"y":300,"delta":40,"ctrl":true}));
+        assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
+        // The pointer event is delivered a frame before the wheel (one pointer event per frame).
+        let mut events = Vec::new();
+        for _ in 0..3 {
+            let mut raw = egui::RawInput::default();
+            app.raw_input_hook(&mut raw);
+            events.extend(raw.events);
+        }
+        let wheels: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::MouseWheel { unit, delta, modifiers, .. } => Some((*unit, *delta, *modifiers)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(wheels.len(), 1, "one wheel event: {wheels:?}");
+        let (unit, delta, modifiers) = wheels[0];
+        assert_eq!(unit, egui::MouseWheelUnit::Point, "the pinch replay uses points");
+        assert!((delta.y - 40.0).abs() < 1e-6, "points pass through: {delta:?}");
+        assert!(modifiers.matches_any(egui::Modifiers::COMMAND), "Ctrl is held: {modifiers:?}");
+        let changes: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::ModifiersChanged(m) => Some(*m),
+                _ => None,
+            })
+            .collect();
+        assert!(changes.iter().any(|m| m.matches_any(egui::Modifiers::COMMAND)), "Ctrl is set for the wheel: {changes:?}");
+        assert_eq!(changes.last().copied(), Some(egui::Modifiers::NONE), "Ctrl is released after it: {changes:?}");
+        app.synthetic.clear();
+
+        let (req, _) = ControlRequest::new("ui.scroll", json!({"x":200,"y":300,"delta":40}));
+        assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            let mut raw = egui::RawInput::default();
+            app.raw_input_hook(&mut raw);
+            events.extend(raw.events);
+        }
+        let wheel = events.iter().find_map(|e| match e {
+            egui::Event::MouseWheel { unit, delta, modifiers, .. } => Some((*unit, *delta, *modifiers)),
+            _ => None,
+        });
+        let (unit, delta, modifiers) = wheel.expect("a wheel event");
+        assert_eq!(unit, egui::MouseWheelUnit::Line, "without ctrl the wheel stays a mouse wheel");
+        assert!((delta.y * ctx.options(|o| o.input_options.line_scroll_speed) - 40.0).abs() < 1e-3, "lines land on the same points: {delta:?}");
+        assert!(!modifiers.matches_any(egui::Modifiers::COMMAND), "no modifier without ctrl");
+        assert!(app.synthetic.is_empty());
+    }
+
+    #[test]
+    fn scroll_rejects_invalid_input_without_queuing_events() {
+        let mut app = SolveApp::new(Session::default(), Services::default());
+        let ctx = crate::fonts::test_context();
+        for invalid in
+            [json!({"unit":"invalid"}), json!({"unit":42}), json!({"unit":null}), json!({"x":1e300}), json!({"y":-1e300}), json!({"delta":1e300})]
+        {
+            let mut params = json!({"x":200,"y":300,"delta":40,"ctrl":true});
+            params.as_object_mut().unwrap().extend(invalid.as_object().unwrap().clone());
+            let (req, _) = ControlRequest::new("ui.scroll", params.clone());
+            let Outcome::Done(reply) = handle(&mut app, &ctx, &req) else { panic!("not a scroll reply") };
+            assert_eq!(reply["ok"], false, "{params}: {reply}");
+            assert!(app.synthetic.is_empty(), "a rejected scroll must not queue input: {params}");
+        }
     }
 
     #[test]
@@ -2098,6 +2213,25 @@ mod tests {
         let before = empty.app.cam;
         let r = empty.call("ui.camera", json!({"yaw": 1, "fit": true}));
         assert!(r["ok"] == false && empty.app.cam == before, "{r}");
+    }
+
+    /// With Perspective view on, `ui.camera` reports the angle the window draws with (#5364) and
+    /// its reply replays; another angle is refused, naming the preference. A sketch draws parallel.
+    #[test]
+    fn ui_camera_reports_the_drawn_angle_and_its_reply_replays() {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.set", json!({"perspective": true}));
+        h.call("ui.prefs", json!({"perspective_fov": 1.0}));
+        let read = h.call("ui.camera", Value::Null);
+        assert_eq!(read["result"]["fov"], json!(1.0), "{read}");
+        let stored = h.app.cam.fov;
+        let again = h.call("ui.camera", read["result"].clone());
+        assert_eq!(again["result"], read["result"], "the reply replays");
+        assert_eq!(h.app.cam.fov, stored, "the camera's own angle is left as it was");
+        let refused = h.call("ui.camera", json!({"fov": 0.6}));
+        assert!(refused["ok"] == false && refused["error"].as_str().unwrap().contains("ui.prefs {perspective_fov}"), "{refused}");
+        h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+        assert_eq!(h.call("ui.camera", Value::Null)["result"]["fov"], json!(0.0), "a sketch draws parallel");
     }
 
     /// `ui.start` params set what a dialog opens on: Drive Joints on a joint (by name or id) at

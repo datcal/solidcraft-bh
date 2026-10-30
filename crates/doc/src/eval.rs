@@ -2523,11 +2523,38 @@ fn point(vals: &BTreeMap<String, Value>, p: &crate::PointExpr) -> Result<Vec3> {
 
 pub(crate) fn val(vals: &BTreeMap<String, Value>, e: &str, k: Kind) -> Result<f64> {
     let scale = vals.get(DESIGN_LEN).map(|x| x.v).unwrap_or(1.0);
+    // Non-literal lengths (a parameter ± a bare number) must read that bare number in the design's
+    // units during the expression, not only when the whole result is unit-less (#9015).
     if k == Kind::Length && scale != 1.0 && !expr::is_literal(e) {
-        let v = expr::eval_with(e, &|n| vals.get(n).copied().ok_or_else(|| DocError::Expr(format!("unknown parameter `{n}`"))))?;
-        return v.to_kind_in(k, expr::Defaults { len: scale, ..expr::Defaults::default() });
+        let defaults = expr::Defaults { len: scale, ..expr::Defaults::default() };
+        let look = |n: &str| vals.get(n).copied().ok_or_else(|| DocError::Expr(format!("unknown parameter `{n}`")));
+        return expr::eval_with_defaults(e, &look, defaults)?.to_kind_in(k, defaults);
     }
     Document::eval_in(vals, e, k)
+}
+
+#[cfg(test)]
+mod design_unit_val_tests {
+    use super::*;
+    use expr::Value;
+
+    /// #9015: with inches as the design unit, `baseLength - 1` subtracts one inch (not one mm).
+    #[test]
+    fn bare_offsets_beside_a_length_follow_the_design_units() {
+        let mut vals = BTreeMap::new();
+        vals.insert(DESIGN_LEN.into(), Value::num(25.4));
+        vals.insert("baseLength".into(), Value::length(76.0 * 25.4));
+        let got = val(&vals, "baseLength - 1", Kind::Length).unwrap();
+        assert!((got - 75.0 * 25.4).abs() < 1e-9, "got {got} mm, want 75 in");
+        let got = val(&vals, "baseLength - 1.5", Kind::Length).unwrap();
+        assert!((got - 74.5 * 25.4).abs() < 1e-9, "got {got} mm, want 74.5 in");
+        // An explicit millimetre still wins.
+        let got = val(&vals, "baseLength - 1 mm", Kind::Length).unwrap();
+        assert!((got - (76.0 * 25.4 - 1.0)).abs() < 1e-9, "got {got}");
+        // A bare literal stays millimetres (feature inputs write the design unit in when typed).
+        let got = val(&vals, "2", Kind::Length).unwrap();
+        assert!((got - 2.0).abs() < 1e-12, "got {got}");
+    }
 }
 
 /// Collapsing the outline and its holes onto one apex cannot make a manifold solid.
