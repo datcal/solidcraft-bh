@@ -321,8 +321,14 @@ fn bracket(sk: &Sketch, ci: usize, tq: f64) -> (Vec<(f64, Vec2, usize)>, bool) {
     let (t0, t1) = sh.range();
     let full = sh.is_full();
     let span = t1 - t0;
-    let mut cuts: Vec<(f64, Vec2, usize)> =
-        cut_points(sk, ci).into_iter().filter(|(t, _, _)| full || (*t > t0 + 1e-9 * span && *t < t1 - 1e-9 * span)).collect();
+    // A cut within rounding of the curve's own end is that end. A curve ending where another one
+    // ends crosses it there only within the intersection's tolerance, and a cut a hair inside
+    // left a piece of no length. Cuts closer than that to each other are already one (`add_cut`).
+    let ends = if full { Vec::new() } else { vec![sh.point(t0), sh.point(t1)] };
+    let mut cuts: Vec<(f64, Vec2, usize)> = cut_points(sk, ci)
+        .into_iter()
+        .filter(|(t, _, _)| full || (*t > t0 + 1e-9 * span && *t < t1 - 1e-9 * span && ends.iter().all(|e| e.dist(sh.point(*t)) >= TOL * 10.0)))
+        .collect();
     cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
     if full {
         if cuts.len() < 2 {
@@ -861,9 +867,10 @@ fn arc_aim(sk: &Sketch, ci: usize, at: Vec2, cmd: &str) -> Result<Option<ArcAim>
         for piece in &pieces {
             for q in support::hits(&circle, piece, &mut budget)? {
                 let travel = if at_b { (q - centre).angle() - end_angle } else { end_angle - (q - centre).angle() }.rem_euclid(TAU);
-                // The growing end itself, or past the arc's far end (where the extension would
-                // run over the arc).
-                if travel <= angle_tol || travel > reach + far_tol {
+                // The growing end itself (within the intersection's tolerance: a line ending there
+                // that touches the circle is found a hair beyond it), or past the arc's far end
+                // (where the extension would run over the arc).
+                if travel <= far_tol || travel > reach + far_tol {
                     continue;
                 }
                 keep_stop(&mut best, travel, q, oi, angle_tol);
@@ -1789,6 +1796,12 @@ fn chamfer(s: &mut Session, p: &Value, cmd: &str, dists: impl FnOnce(f64) -> Res
         let (pc, pa, pb) = (sk.point(c).unwrap_or_default(), sk.point(fa).unwrap_or_default(), sk.point(fb).unwrap_or_default());
         let (u, v) = ((pa - pc).normalized().unwrap_or(Vec2::X), (pb - pc).normalized().unwrap_or(Vec2::Y));
         let corner_angle = u.cross(v).atan2(u.dot(v)).abs();
+        // Lines in line with each other, or lying on each other, have no corner to cut, as a
+        // fillet refuses them: on two lines lying on each other the chamfer was a line of no
+        // length between their cut-back ends.
+        if !(2e-6..=std::f64::consts::PI - 2e-9).contains(&corner_angle) {
+            return Err(bad(cmd, "the lines are parallel"));
+        }
         let (da, db) = dists(corner_angle)?;
         let (ta, tb, _, kept) = cut_corner(sk, la, lb, c, fa, fb, da, db, cmd)?;
         let l = sk.add_line_pts(ta, tb, None)?;

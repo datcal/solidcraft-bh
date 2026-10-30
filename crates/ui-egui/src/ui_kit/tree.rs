@@ -31,6 +31,8 @@ pub(crate) struct Row<'a> {
     pub(crate) name: bool,
     pub(crate) selected: bool,
     pub(crate) dim: bool,
+    /// What Cut has marked, until Paste moves it: the row has a dashed outline.
+    pub(crate) cut: bool,
     pub(crate) color: Option<Color32>,
     /// Draw the icon in this one colour instead of its artwork (a sketch's solve state, #7245).
     pub(crate) icon_ink: Option<Color32>,
@@ -46,6 +48,9 @@ pub(crate) struct Row<'a> {
     pub(crate) kind_tip: Option<&'a str>,
     /// Lit by the selection or the 3D view's pointer: the item's own row, or a row leading to it.
     pub(crate) mark: Mark,
+    /// A feature that failed or built with a warning, or a folded row holding one: its mark at
+    /// the row's end, the message in [`Row::tip`].
+    pub(crate) status: Option<Status>,
     /// Optional document appearance and shared trailing text slots.
     pub(crate) swatch: Option<Color32>,
     pub(crate) secondary: &'a str,
@@ -65,6 +70,23 @@ pub(crate) enum Mark {
     Branch,
     /// A lit item's own row: a solid bar, and the hover colour unless it is selected.
     Here,
+}
+
+/// A feature's build state as its row marks it; the worse one sorts last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Status {
+    Warning,
+    Error,
+}
+
+impl Status {
+    /// The icon and the scenario handle's word.
+    pub(crate) fn icon(self) -> &'static str {
+        match self {
+            Status::Warning => "warning",
+            Status::Error => "error",
+        }
+    }
 }
 
 /// What happened on a row.
@@ -247,6 +269,13 @@ pub(crate) fn tree_row(ui: &mut egui::Ui, id: egui::Id, row: &Row) -> RowResp {
     // and its full text is in the tooltip.
     let badges_width = row.badges.len() as f32 * 15.0;
     let mut right = if row.compact && row.eye.is_some() { eye_r.left() - t.space_4 } else { action_left } - badges_width;
+    if let Some(status) = row.status {
+        right -= t.space_16;
+        let sr = Rect::from_center_size(pos2(right + t.space_8, cy), vec2(t.space_14, t.space_14));
+        icons::paint_icon(ui.painter(), sr, status.icon(), 1.0);
+        crate::scenario::publish_handle(&format!("status:{}:{}", status.icon(), row.label), sr.center());
+        right -= t.space_4;
+    }
     for text in [row.count, row.secondary, if row.compact { row.subtitle } else { "" }] {
         if text.is_empty() {
             continue;
@@ -281,6 +310,11 @@ pub(crate) fn tree_row(ui: &mut egui::Ui, id: egui::Id, row: &Row) -> RowResp {
     let elided = galley.elided;
     crate::scenario::publish_rect(&format!("row_label:{}", row.label), Rect::from_min_size(pos2(x, cy - galley.size().y / 2.0), galley.size()));
     ui.painter().with_clip_rect(ui.painter().clip_rect().intersect(r)).galley(pos2(x, cy - galley.size().y / 2.0), galley, col);
+    if row.cut {
+        let inside = r.shrink2(vec2(t.space_2, t.space_2));
+        let corners = [inside.left_top(), inside.right_top(), inside.right_bottom(), inside.left_bottom(), inside.left_top()];
+        ui.painter().add(egui::Shape::dashed_line(&corners, Stroke::new(1.2, t.text_dim), 4.0, 3.0));
+    }
     let mut bx = (x + lw + 6.0 + name_action_width).min(r.right() - 16.0);
     for b in row.badges {
         let br = Rect::from_center_size(pos2(bx + 6.0, cy), vec2(t.space_12, t.space_12));

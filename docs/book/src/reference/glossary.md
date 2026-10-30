@@ -206,6 +206,19 @@ A dimension can drive the sketch, or be driven by it and only show the value.
 - **Elsewhere:** dimension, dimensional constraint, driving dimension.
 - **For translators:** not a drawing dimension and not a measured value.
 
+### equation curve
+
+A sketch curve whose shape comes from formulas over a range of one variable.
+
+It is a fit point spline through fixed points that the formulas place, and they place them again
+when the design's parameters change. Compare *spline*, whose points are placed by hand.
+
+- **In SolidCraft:** `sketch.equation_curve`, `sketch.equation_curve.edit`; the `equations`
+  design-file key of a sketch.
+- **Don't use:** formula curve, function curve, parametric curve (for the command).
+- **Elsewhere:** equation-driven curve, curve from equation, function plot.
+- **For translators:** "equation" is a mathematical formula, not a balance or an equality constraint.
+
 ### feature
 
 One step in the timeline that creates or changes geometry, such as an extrude, a fillet or a
@@ -259,6 +272,22 @@ A material sets mass, centre of gravity and strength values. How the body looks 
 - **Don't use:** material for a render or visual material.
 - **Elsewhere:** material, physical material.
 - **For translators:** not an appearance.
+
+### moment of inertia
+
+How a body's mass resists turning about an axis: the mass times the square of its distance from
+that axis, summed over the body.
+
+SolidCraft reports the whole inertia tensor about the centre of mass in world axes, with its
+*principal moments* and *principal axes*: the three axes with no products of inertia between
+them. The *first moments* are the mass times the centre of mass.
+
+- **In SolidCraft:** `inertia_g_mm2`, `principal_moments_g_mm2`, `principal_axes`,
+  `first_moment_g_mm` and `about` in `component.properties` and `occurrence.properties`; the
+  Properties window's Moment of inertia section.
+- **Don't use:** rotational inertia, second moment of mass, mass moment.
+- **Elsewhere:** moment of inertia, inertia tensor, mass moment of inertia.
+- **For translators:** not the second moment of area of a cross-section, a different quantity.
 
 ### occurrence
 
@@ -323,6 +352,24 @@ are kept, not deleted.
 - **Elsewhere:** rollback bar, rollback marker, end-of-part marker.
 - **For translators:** "history" is the undo history, not the timeline. French had three names
   for this marker while English did.
+
+### settings profile
+
+A named set of input and interface preferences that can be switched, exported and imported as
+one.
+
+A settings profile holds the Interface, Navigation and Sketch preferences, the interface
+language, keyboard shortcuts, the toolbar and the S box favourites. Settings that belong to one
+computer (the 3D mouse, graphics, units) stay out. It is an app setting, not part of a design.
+
+- **In SolidCraft:** `settings.profile.list`, `settings.profile.save`, `settings.profile.apply`,
+  `settings.profile.rename`, `settings.profile.delete`, `settings.profile.export`,
+  `settings.profile.import`; the `settings_profiles` key of the stored preferences; the
+  `solidcraft-profile/1` file format.
+- **Don't use:** preset, configuration, workspace (for the set of settings).
+- **Elsewhere:** settings profile, user profile, preferences set.
+- **For translators:** not a sketch profile and not a frame profile (see *Words with more than
+  one meaning*, "Profile"), and not a design configuration.
 
 ### sketch
 
@@ -407,6 +454,9 @@ share a catalogue entry. Each meaning below gets its own term and, in time, its 
 | Part | a standard part | *standard part* | `parts.*` |
 | | a body, an occurrence or the design | *body*, *occurrence*, *design* | catalogue texts that say "part" |
 | | a design property | *part number* | Design Properties |
+| Profile | a closed region of a sketch that a feature uses | profile | `solid.extrude`, `solid.revolve` |
+| | the cross-section a frame member follows | frame profile | `frame.profile.*` |
+| | a named set of preferences | *settings profile* | `settings.profile.*`, Preferences › General |
 | Gap | the space a hem leaves | hem gap | the Hem dialog's Gap row |
 | | an open end in the sketch continuity legend | open end | the sketch continuity legend |
 | Clearance | the Clearance command | clearance check | `inspect.clearance` |

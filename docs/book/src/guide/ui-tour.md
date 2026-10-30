@@ -14,6 +14,11 @@
   panel's name for all its commands. Drag a command from the dropdown onto a panel's label
   or empty space to append it; the insertion line shows its destination. Drop onto an existing
   button to insert before it. Buttons can also move between panels, and the layout is saved.
+  Click the **+** after the tabs, right-click a tab or empty toolbar space, or use
+  **Preferences > Interface > Toolbar tabs** to hide or restore tabs. Every existing tab,
+  including Sheet Metal and Weldments, stays visible by default. Tabs you hide stay hidden in every
+  design until you show them again. Hidden tabs keep
+  their customised buttons, commands in search and shortcuts; with all tabs hidden, **+** remains.
 - **Browser** (left). The design as a tree: document settings and units, named views, the
   origin, bodies, sketches, construction planes, canvases, joints and components. The eye shows or
   hides an item, a component's radio button makes it the active component, and right-clicking any
@@ -39,6 +44,7 @@
   off: scroll zooms like the wheel); mouse wheels zoom and the thumb wheel pans sideways.
   On Linux, pinch needs the native Wayland window system
   (see [Troubleshooting](troubleshooting.md)).
+  To zoom with vertical two-finger scroll while holding a key, choose the key in Navigation › Zoom with two-finger scroll while holding (Cmd on macOS or Ctrl on Windows/Linux, Alt, or Control). It is off until you choose one.
   With the **Fusion** preset and two-finger pan enabled, hold **Shift** while scrolling with
   two fingers to orbit freely instead of panning. No click is needed. Releasing Shift returns
   to panning, even during the same gesture. Shift does not snap this gesture to standard views;
@@ -56,6 +62,11 @@
   without a limit. Both default to off for every mouse
   preset. With SolidWorks navigation, right-click a planar face and choose **Normal to Selection**
   to use Look At (also Ctrl+8); repeat to flip the side, preserving scale and projection.
+
+  **Right drag orbits** (Preferences › Navigation, on by default) is shown where the mouse
+  preset orbits on a right drag. Off, a right drag leaves the camera alone and the right button
+  only opens the context menu. Picking the SolidWorks preset turns it off and sets Middle
+  double-click to Fit; both can be changed back afterwards.
 
   **Mouse gestures** (Preferences › Navigation, off by default) work with the SolidWorks mouse preset
   only (the wheel orbits, Ctrl + wheel pans) and take over the right button, which then no longer
@@ -128,6 +139,7 @@
   selects it, and while the marker sits between a sketch and its feature, or the two are in
   different folders, the sketch keeps a row of its own. The timeline along the bottom always lists
   features in creation order.
+  Feature Folders can contain joints as well as features; closing a folder hides both behind one tile.
 - **Status bar** (off by default: Preferences › Interface › **Status bar**). A thin bar along
   the window's bottom edge, below the timeline. From the right: the design's units (click them
   to change the design's units, one undo step), the open sketch's state in its colour (under
@@ -148,6 +160,10 @@ Preferences (File › Preferences) hold the theme, workspace layout, the units o
 visual style and autosave. Graphics › Colour vision gives the colours that carry a meaning (sketch
 states, axes, bends, analyses, icons) values for a weak red, green or blue sense: Protan, Deutan or
 Tritan. In a mode, the faces Draft and Accessibility Analysis mark as failing are striped too.
+Graphics › Viewport › **Perspective view** draws the view with perspective, and its **Field of view**
+(15° to 90°, about 34° by default) sets how strong the perspective is. The model keeps its size in the
+view when the angle changes: a wider angle brings the camera closer. A sketch you are editing is always
+drawn without perspective.
 Command messages and errors show for a few seconds in the status chip at the bottom left of the view. Click the chip, or choose Help › **Messages…**, for every message of the session: newest first, errors in red, each line selectable, with **Copy all** for a bug report.
 Help › Keyboard Shortcuts lists every key, and File › Keyboard
 Shortcuts changes them.
@@ -284,6 +300,35 @@ or turn on **Frame rate details**, for the performance overlay:
 
 While the readout is on, the view redraws every frame. With vertical sync the frame rate tops
 out at the display's refresh rate; the interface time and the GPU counts still show the work.
+
+### Settings profiles
+
+General › **Settings profiles** keeps the input and interface settings together under a name,
+for example "Laptop" and "Large monitor", and switches them at once. A profile holds:
+
+- the Interface, Navigation and Sketch pages: theme, interface scale and font, layout, mouse
+  mode and the other navigation options, the radial menu and mouse gestures with every studio's
+  command lists, and the sketch modifier keys;
+- the interface language;
+- the keyboard shortcuts, the toolbar and the S box favourites;
+- the imported theme it uses, so it travels with an exported profile.
+
+Settings that belong to the computer stay out: the 3D mouse (calibration, driver, speeds and
+buttons), graphics, units and decimals, the AI page, recent files and window positions.
+
+- **Active profile** lists the profiles; choosing one applies it. While its settings differ from
+  what was saved, a note says so.
+- **Save** keeps the current settings under the typed name, replacing a profile of that name,
+  and makes it the active one.
+- **Rename** and **Delete** act on the active profile.
+- **Export…** saves the active profile as one `solidcraft-profile/1` file; **Import…** adds one
+  without switching to it (a name already taken gets a number).
+
+Switching, like any other change in Preferences, is taken back by Cancel. A setting a profile
+holds but this computer refuses (an interface font that isn't installed) keeps its current value,
+and the message says how many did. Import ignores unknown keys, leaves out values this version
+can't read, and refuses files over 4 MiB. Scripts and agents reach the same actions with the
+`settings.profile.*` commands (`save`, `apply`, `rename`, `delete`, `list`, `export`, `import`).
 
 Navigation › **Smooth wheel zoom** is on by default. Turn it off to apply each wheel or
 trackpad event immediately, with no smoothing tail. It is independent of **Animate view

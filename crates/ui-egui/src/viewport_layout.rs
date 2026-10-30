@@ -117,12 +117,23 @@ impl Layout {
         } else {
             Rect::NOTHING
         };
+        // A navigation bar on the view's top edge (#8183) keeps the pair and the axis view below it.
+        let bar_on_top = navigation.is_positive() && navigation.center().y < available.center().y;
+        let below_bar = |rect: Rect| {
+            if bar_on_top && rect.intersect(navigation).is_positive() {
+                rect.translate(vec2(0.0, navigation.bottom() + CORNER_GAP - rect.top()))
+            } else {
+                rect
+            }
+        };
+        let confirm = below_bar(confirm);
         // The axis view starts below the pair while it is shown.
         let top = if confirm.is_positive() { confirm.bottom() + CORNER_GAP } else { available.top() };
         let cube_size = if fit_in_content { 110.0 } else { super::viewport::axis_view_size(style) };
         let axis_left = |size| {
             if inspector_side == Some(crate::frame::Side::Left) { available.left() } else { available.right() - size }
         };
+        let top = below_bar(Rect::from_min_size(pos2(axis_left(cube_size), top), vec2(cube_size, cube_size))).top();
         let mut axis_view = if available.width() >= cube_size && available.bottom() - top >= cube_size {
             Rect::from_min_size(pos2(axis_left(cube_size), top), vec2(cube_size, cube_size))
         } else {
@@ -160,16 +171,12 @@ impl Layout {
     }
 }
 
-pub(crate) fn fit_bounds(cam: Camera, bounds: &Aabb3, layout: &Layout, perspective: bool) -> Option<Camera> {
-    fit_with_fov(cam, bounds, layout, if perspective { 0.6 } else { 0.0 })
-}
-
 /// Product cameras keep the authored lens while framing the free canvas.
 pub(crate) fn fit_product_bounds(cam: Camera, bounds: &Aabb3, layout: &Layout) -> Option<Camera> {
-    fit_with_fov(cam, bounds, layout, cam.fov)
+    fit_bounds(cam, bounds, layout, cam.fov)
 }
 
-fn fit_with_fov(mut cam: Camera, bounds: &Aabb3, layout: &Layout, fov: f64) -> Option<Camera> {
+pub(crate) fn fit_bounds(mut cam: Camera, bounds: &Aabb3, layout: &Layout, fov: f64) -> Option<Camera> {
     let perspective = fov > 0.0;
     if !fov.is_finite() || !(0.0..std::f64::consts::PI).contains(&fov) {
         return None;
