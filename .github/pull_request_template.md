@@ -1,10 +1,12 @@
+<!-- Title: which part of the app changes and what a user now sees or can do, clear to someone who hasn't seen your chat, the issue or the code. -->
+
 ## Change
 
 Start with what this is, in plain words someone new to the project would understand: what it does and who it's for. Don't assume anyone knows the name of your tool, project or feature. Then describe the problem and resulting behavior. Link the issue when applicable.
 
 Changes a default: no
 
-<!-- Required line, replace "no" if this changes what a user gets out of the box (a default value, key binding, setting, tool behaviour):
+<!-- Required line, replace "no" if this changes what a user gets out of the box (a default value, key binding, setting, tool behaviour; a UX default only, a kernel result change is 'no'):
 Changes a default: yes — <what>, old behaviour kept behind preference <name>
 Docs-only and bot PRs are exempt. -->
 
