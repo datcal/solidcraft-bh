@@ -50,7 +50,7 @@ mod desktop {
     use serde_json::{Value, json};
 
     use crate::SolveApp;
-    use crate::theme::Tokens;
+    use solidcraft_theme::Tokens;
 
     /// A line from a plug-in longer than this is dropped.
     const MAX_LINE: usize = 4 * 1024 * 1024;
@@ -249,7 +249,7 @@ mod desktop {
                 }
             }
         });
-        let start = json!({"event": {"type": "start", "version": crate::update::current_version(), "language": crate::i18n::language()}});
+        let start = json!({"event": {"type": "start", "version": crate::update::current_version(), "language": solidcraft_ui_text::language()}});
         let _ = to.send(start.to_string());
         let button = Button {
             label: if found.spec.button.label.is_empty() { found.name.clone() } else { found.spec.button.label.clone() },
@@ -447,7 +447,7 @@ mod desktop {
 
     /// One line of `text`, cut with an ellipsis at `width`.
     fn one_line(text: &str, size: f32, color: Color32, width: f32, strong: bool) -> LayoutJob {
-        let font = if strong { crate::fonts::semibold(size) } else { FontId::proportional(size) };
+        let font = if strong { crate::ui_kit::type_face::semibold(size) } else { FontId::proportional(size) };
         let mut job = LayoutJob::single_section(text.to_string(), TextFormat { font_id: font, color, ..Default::default() });
         job.wrap = TextWrapping::truncate_at_width(width.max(1.0));
         job
