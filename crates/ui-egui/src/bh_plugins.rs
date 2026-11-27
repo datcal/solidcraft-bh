@@ -135,7 +135,8 @@ mod desktop {
 
     fn roots() -> Vec<PathBuf> {
         let mut roots = Vec::new();
-        if let Some(dir) = crate::plugins::plugins_dir() {
+        // bh: upstream dropped `plugins::plugins_dir`; same folder, named here.
+        if let Some(dir) = solidcraft_engine::recovery::data_dir().map(|d| d.join("plugins")) {
             roots.push(dir);
         }
         if let Some(bin) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
@@ -152,7 +153,7 @@ mod desktop {
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         for root in roots {
-            let (plugins, _) = crate::plugins::scan(root);
+            let (plugins, _) = crate::plugins::inventory(Some(root), std::iter::empty());
             for plugin in plugins {
                 let dir = root.join(&plugin.id);
                 let Ok(text) = std::fs::read_to_string(dir.join("bh.json")) else { continue };
